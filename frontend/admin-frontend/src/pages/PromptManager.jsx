@@ -1,128 +1,4 @@
-// import { useEffect, useState } from "react";
-// import { adminAPI } from "../services/api";
-// import { Layout } from "../components/Layout";
-// import { Card } from "../components/ui/Card";
-// import PromptModal from "./PromptModal";
-// import { Trash2, Edit } from "lucide-react";
 
-// function PromptManager({ onLogout }) {
-//   const [prompts, setPrompts] = useState([]);
-//   const [loading, setLoading] = useState(true);
-//   const [error, setError] = useState("");
-//   const [selected, setSelected] = useState(null);
-//   const [modalOpen, setModalOpen] = useState(false);
-
-//   const fetchPrompts = async () => {
-//     try {
-//       setLoading(true);
-//       const res = await adminAPI.getPrompts();
-//       setPrompts(res.data || []);
-//     } catch (err) {
-//       console.error(err);
-//       setError("Failed to load prompts.");
-//     } finally {
-//       setLoading(false);
-//     }
-//   };
-
-//   useEffect(() => {
-//     fetchPrompts();
-//   }, []);
-
-//   const handleDelete = async (id) => {
-//     if (!window.confirm("Are you sure?")) return;
-//     await adminAPI.deletePrompt(id);
-//     fetchPrompts();
-//   };
-
-//   const handleToggle = async (id) => {
-//     await adminAPI.togglePrompt(id);
-//     fetchPrompts();
-//   };
-
-//   return (
-//     <Layout onLogout={onLogout}>
-//       <div className="space-y-6">
-//         <div className="flex items-center justify-between">
-//           <h1 className="text-2xl font-bold">Handle Prompts</h1>
-//           <button
-//             onClick={() => {
-//               setSelected(null);
-//               setModalOpen(true);
-//             }}
-//             className="bg-primary-600 text-white px-4 py-2 rounded-lg hover:bg-primary-700 transition"
-//           >
-//             + Add Prompt
-//           </button>
-//         </div>
-
-//         {error && <p className="text-red-600">{error}</p>}
-
-//         <Card className="p-6">
-//           {loading ? (
-//             <p className="text-gray-500">Loading prompts...</p>
-//           ) : (
-//             <table className="min-w-full border">
-//               <thead className="bg-gray-100">
-//                 <tr>
-//                   <th className="p-3 text-left">Intent Key</th>
-//                   <th className="p-3 text-left">Status</th>
-//                   <th className="p-3 text-left">Actions</th>
-//                 </tr>
-//               </thead>
-//               <tbody>
-//                 {prompts.map((p) => (
-//                   <tr key={p.id} className="border-t">
-//                     <td className="p-3 font-medium">{p.intent_key}</td>
-//                     <td className="p-3">
-//                       <button
-//                         onClick={() => handleToggle(p.id)}
-//                         className={`px-3 py-1 rounded text-sm ${
-//                           p.is_active
-//                             ? "bg-green-100 text-green-700"
-//                             : "bg-gray-200 text-gray-600"
-//                         }`}
-//                       >
-//                         {p.is_active ? "Active" : "Inactive"}
-//                       </button>
-//                     </td>
-//                     <td className="p-3 flex gap-3">
-//                       <button
-//                         onClick={() => {
-//                           setSelected(p);
-//                           setModalOpen(true);
-//                         }}
-//                         className="text-blue-600 hover:text-blue-800"
-//                       >
-//                         <Edit size={18} />
-//                       </button>
-//                       <button
-//                         onClick={() => handleDelete(p.id)}
-//                         className="text-red-600 hover:text-red-800"
-//                       >
-//                         <Trash2 size={18} />
-//                       </button>
-//                     </td>
-//                   </tr>
-//                 ))}
-//               </tbody>
-//             </table>
-//           )}
-//         </Card>
-//       </div>
-
-//       {modalOpen && (
-//         <PromptModal
-//           data={selected}
-//           onClose={() => setModalOpen(false)}
-//           onSaved={fetchPrompts}
-//         />
-//       )}
-//     </Layout>
-//   );
-// }
-
-// export default PromptManager;
 import { useEffect, useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { adminAPI } from '../services/api';
@@ -208,9 +84,9 @@ function PromptManager({ onLogout }) {
               setSelected(null);
               setModalOpen(true);
             }}
-            className="bg-primary-600 text-white px-4 py-2 rounded-lg hover:bg-primary-700 transition"
+            className="bg-gradient-to-r from-blue-600 to-indigo-600 text-white px-5 py-2.5 rounded-xl hover:shadow-lg hover:from-blue-700 hover:to-indigo-700 transition-all duration-300 font-medium shadow-md flex items-center gap-2 transform hover:-translate-y-0.5"
           >
-            + Add Prompt
+            + New Prompt
           </button>
         </div>
 
@@ -218,41 +94,30 @@ function PromptManager({ onLogout }) {
         {error && <p className="text-red-600">{error}</p>}
 
         {/* Table */}
-        <Card className="p-6">
+        <Card className="p-6 shadow-xl border border-gray-100 rounded-xl overflow-hidden animate-in fade-in duration-700">
           {loading ? (
-            <p className="text-gray-500">Loading prompts...</p>
+            <div className="flex justify-center items-center py-12">
+              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary-600"></div>
+            </div>
           ) : (
-            <table className="min-w-full border">
-              <thead className="bg-gray-100">
-                <tr>
-                  <th className="p-3 text-left">Prompt Name</th>
-                  <th className="p-3 text-left">Type</th>
-                  <th className="p-3 text-left">Status</th>
-                  <th className="p-3 text-left">Actions</th>
+            <table className="min-w-full">
+              <thead>
+                <tr className="bg-gray-50 border-b border-gray-100">
+                  <th className="p-4 text-left font-semibold text-gray-600 uppercase text-xs tracking-wider">Prompt Name</th>
+                  <th className="p-4 text-left font-semibold text-gray-600 uppercase text-xs tracking-wider">Status</th>
+                  <th className="p-4 text-left font-semibold text-gray-600 uppercase text-xs tracking-wider">Actions</th>
                 </tr>
               </thead>
-              <tbody>
+              <tbody className="divide-y divide-gray-50">
                 {prompts.map((p) => (
-                  <tr key={p.id} className="border-t">
-                    <td className="p-3">
-                      <div className="font-medium">{p.display_name}</div>
-                    </td>
-
-                    {/* Intent Type Badge */}
-                    <td className="p-3">
-                      <span
-                        className={`px-2 py-1 rounded text-xs font-semibold ${
-                          p.intent_type === 'image'
-                            ? 'bg-purple-100 text-purple-700'
-                            : 'bg-blue-100 text-blue-700'
-                        }`}
-                      >
-                        {p.intent_type === 'image' ? 'Image' : 'Text'}
-                      </span>
+                  <tr key={p.id} className="hover:bg-blue-50/50 transition-all duration-300 group">
+                    <td className="p-4">
+                      <div className="font-semibold text-gray-800">{p.display_name}</div>
+                      <div className="text-xs text-gray-400 font-mono mt-1">{p.intent_key}</div>
                     </td>
 
                     {/* Status */}
-                    <td className="p-3">
+                    <td className="p-4">
                       <button
                         onClick={() => {
                           const action = p.is_active ? 'deactivate' : 'activate';
@@ -260,24 +125,24 @@ function PromptManager({ onLogout }) {
                             handleToggle(p.id);
                           }
                         }}
-                        className={`px-3 py-1 rounded text-sm ${
-                          p.is_active
-                            ? 'bg-green-100 text-green-700'
-                            : 'bg-gray-200 text-gray-600'
-                        }`}
+                        className={`px-3 py-1 rounded-full text-xs font-medium transition-all duration-300 ${p.is_active
+                          ? 'bg-gradient-to-r from-emerald-400/10 to-emerald-500/10 text-emerald-700 border border-emerald-200 hover:border-emerald-300'
+                          : 'bg-gray-100 text-gray-500 border border-gray-200 hover:border-gray-300'
+                          }`}
                       >
+                        <span className={`inline-block w-2 h-2 rounded-full mr-2 ${p.is_active ? 'bg-emerald-500' : 'bg-gray-400'}`}></span>
                         {p.is_active ? 'Active' : 'Inactive'}
                       </button>
                     </td>
 
                     {/* Actions */}
-                    <td className="p-3 flex gap-3">
+                    <td className="p-4 flex gap-4 opacity-70 group-hover:opacity-100 transition-opacity">
                       <button
                         onClick={() => {
                           setSelected(p);
                           setModalOpen(true);
                         }}
-                        className="text-blue-600 hover:text-blue-800"
+                        className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
                         title="Edit"
                       >
                         <Edit size={18} />
@@ -285,7 +150,7 @@ function PromptManager({ onLogout }) {
 
                       <button
                         onClick={() => handleDelete(p.id)}
-                        className="text-red-600 hover:text-red-800"
+                        className="p-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors"
                         title="Delete"
                       >
                         <Trash2 size={18} />

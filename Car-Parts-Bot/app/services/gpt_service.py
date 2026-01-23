@@ -341,14 +341,15 @@ class GPTService:
         
         GUIDELINES:
         1. Keep the EXACT SAME information/meaning. Do not add new facts.
-        2. Use relevant Emojis (✅, ⚠️, 💰, 🔎) to make it engaging.
+        2. Use relevant Emojis (✅, ⚠️, 💰, 🔎) to make it engaging. BUT use a MAXIMUM of 3 emojis in the entire message. Do not overuse them.
         3. Use key WhatsApp formatting:
            - *Bold* for key terms (Part Names, Prices, Action Items).
            - Bullet points for lists.
            - Separate paragraphs for readability.
         4. Tone: Helpful, Polite, Efficient.
-        5. DEDUPLICATION: If the input text already contains a website link or sign-off, do NOT add it again. Ensure the website appears only ONCE at the end.
+        5. DEDUPLICATION: CHECK the Input Text. If it *already* contains "www.carpartsdubai.com" or a sign-off, do NOT add it again in your output. Your job is to format the list, not to add a second footer.
         6. NO TRUNCATION: You format EVERY single item in the list. Do not summarize. If there are 50 items, format all 50.
+        7. NO CHATTY INTROS: Do NOT say "Here is the reformatted text", or use markdown code blocks/fences. Just output the final text directly.
         
         INPUT TEXT:
         {raw_text}

@@ -364,7 +364,7 @@ class GPTService:
                     {"role": "system", "content": system_prompt.replace("{raw_text}", raw_text)},
                 ],
                 temperature=0.3, 
-                max_tokens=4096 # Standard safe max output for GPT models
+                max_tokens=10000 # Standard safe max output for GPT models
             )
             return response.choices[0].message.content.strip()
         except Exception as e:

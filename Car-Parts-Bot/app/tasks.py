@@ -28,7 +28,6 @@ def process_whatsapp_message(user_id, content, msg_type="text", extra_data=None)
             if not unified_text:
                 unified_text = "User sent an image but I could not read it."
 
-
         # ---- AUDIO ----
         elif msg_type == "audio":
             url = get_media_url(content)
@@ -41,7 +40,7 @@ def process_whatsapp_message(user_id, content, msg_type="text", extra_data=None)
         elif msg_type == "document":
             # content is media_id, extra_data is filename
             unified_text = extract_text_from_document(user_id, content, extra_data or "file.bin")
-
+            print(unified_text)
         # ---- UNIFIED PIPELINE ----
         if not unified_text.strip():
             unified_text = "(Empty message)"

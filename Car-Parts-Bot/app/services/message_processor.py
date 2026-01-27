@@ -102,7 +102,7 @@ def search_catalog_by_name(vin: str, part_names: list) -> list:
         try:
             # Scrape
             scrape_data = scraper.search_part(vin, name)
-            print(f"   --> Scraper Result for '{name}': {list(scrape_data.keys())}")
+            # print(f"   --> Scraper Result for '{name}': {list(scrape_data.keys())}")
             
             if "error" in scrape_data:
                 print(f"   ❌ Catalog returned error: {scrape_data['error']}")
@@ -132,7 +132,7 @@ def search_catalog_by_name(vin: str, part_names: list) -> list:
 
                 # Check DB for these OEM numbers
                 db_matches = search_parts_in_db(found_oem_numbers)
-                
+                # print(db_matches)
                 if db_matches:
                     print(f"   ✅ Found {len(db_matches)} matches in Local DB (Stock).")
                     results.extend(db_matches)
@@ -169,16 +169,15 @@ def process_user_message(user_id: str, unified_text: str) -> str:
     print(f"Processing message for {user_id}: {unified_text[:100]}...")
 
 
-
-
-
     # --- STEP 1: ENTITY EXTRACTION ---
     extracted = gpt.extract_entities(unified_text)
     
     vin_list = extracted.get("vin_list", [])
     part_numbers = extracted.get("part_numbers", [])
     item_descriptions = extracted.get("item_descriptions", [])
-    
+    print("vin list",vin_list)
+    print("part numbers",part_numbers)
+    print("item descriptions",item_descriptions)
     # --- STEP 2: HARD LOOKUPS ---
     
     # A. VIN Handling
@@ -204,6 +203,7 @@ def process_user_message(user_id: str, unified_text: str) -> str:
         else:
             # Not cached or new VIN -> Scrape
             scraper = get_scraper()
+            print(f"IT IS GOING TO FIND THE VIN{current_vin}")
             if scraper:
                 try:
                     # print(f"Decoding VIN {current_vin} via Scraper...")
@@ -286,7 +286,7 @@ def process_user_message(user_id: str, unified_text: str) -> str:
     whatsapp_reply = gpt_result.get("whatsapp_text", "...")
     payload = gpt_result.get("machine_payload", {})
     
-    print(f"GPT Result: {payload}")
+    # print(f"GPT Result: {payload}")
     
     # --- STEP 5: ACTIONS (Backend Side Effects) ---
     action = payload.get("action")

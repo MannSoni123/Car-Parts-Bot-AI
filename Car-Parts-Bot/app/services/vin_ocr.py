@@ -112,7 +112,7 @@ def extract_text_from_image(img_bytes: bytes, content_type: str) -> str:
                 {
                     "role": "user",
                     "content": [
-                        {"type": "text", "text": "1. Transcribe any visible text, especially VINs or Part Numbers.\n2. If this is a photo of a dashboard warning light, identify the symbol (e.g. 'Check Engine Light', 'Oil Pressure Low').\n3. If this is a photo of a car part, name the part (e.g. 'Alternator', 'Shock Absorber').\n\nReturn the text and/or the visual description."},
+                        {"type": "text", "text": "1. Transcribe any visible text, especially VINs and remove spaces from it or Part Numbers.\n2. If this is a photo of a dashboard warning light, identify the symbol (e.g. 'Check Engine Light', 'Oil Pressure Low').\n3. If this is a photo of a car part, name the part (e.g. 'Alternator', 'Shock Absorber').\n\nReturn the text and/or the visual description."},
                         {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{image_b64}"}}
                     ]
                 }

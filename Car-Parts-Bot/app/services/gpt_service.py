@@ -125,7 +125,8 @@ class GPTService:
              3. COMPARE the User's Input (visual description or text) with the descriptions in the 'REFERENCE MATERIAL'.
              4. If the User's description is about a warning light, use the reference material to determine the meaning.
              5. Do NOT say "it looks like X but usually means Y". Say EXACTLY what the Reference says it is.
-             6. If the answer is in the Reference, use it. If not, say "Not found in reference".
+             6. EXCEPTION: If the user is asking for a CAR PART (e.g. Brake Pads, Filter) AND there are item(s) in the 'Matched Parts (DB)' list provided in the Context, you MUST IGNORE the Reference Material and output the parts found.
+             7. Only say "Not found in reference" if the user is asking a specific question that should be in the reference but isn't there, and NO parts were found in the DB.
              """
 
         # --- DEBUG / STRICT MODE OVERRIDES ---
@@ -145,6 +146,9 @@ class GPTService:
         elif has_empty and not any(p.get("price") for p in parts): # Only empty/missing
              strict_instructions.append("CRITICAL: The catalog search returned NO results. You MUST reply: 'Not in Catalog'. Do not offer to search again.")
 
+        if len(parts) >= 1:
+            strict_instructions.append(f"CRITICAL: {len(parts)} parts have been found in the database matching the user's request. You MUST present these parts (Product Name, Brand, Price, Availability). Do NOT ask the user what they are looking for, because the search was successful!")
+
         # --- MULTIPLE parts enforcement ---
         if len(parts) > 1:
             strict_instructions.append(f"""CRITICAL: {len(parts)} parts were found in the database. 
@@ -157,7 +161,11 @@ class GPTService:
             strict_instructions.append(f"CRITICAL: The user is speaking language code '{detected_lang}'. You MUST reply ENTIRELY in that language, except for Technical Terms (Part Names/Numbers) which can remain in English. Do NOT mix languages unnecessarily.")
         
         if strict_instructions:
+            # print(f"   🚨 [SuperIntent] Strict Instructions Triggered: {len(strict_instructions)} rules.")
+            # print(f"   🚨 Rules: {strict_instructions}")
             final_system_message += "\n\n" + "\n".join(strict_instructions)
+        
+        print(f"   📦 [SuperIntent] Parts Context: {len(parts)} items passed to GPT.")
 
         try:
             start_time = time.time()
@@ -174,7 +182,7 @@ class GPTService:
             )
             
             raw_content = response.choices[0].message.content
-            print(f"🤖 [GPT-4o Raw Response]: {raw_content[:500]}...") # DEBUG LOG
+            # print(f"🤖 [GPT-4o Raw Response]: {raw_content[:500]}...") # DEBUG LOG
             result = json.loads(raw_content)
             
             # Simple validation
@@ -183,7 +191,7 @@ class GPTService:
             if "machine_payload" not in result:
                 # auto-repair payload
                 result["machine_payload"] = {"action": "info_only", "intent": "super_intent"}
-                
+            print(result['whatsapp_text'])
             # Chain: Format Response (Sales Agent Persona)
             if "whatsapp_text" in result:
                 formatted_text = self._format_as_sales_agent(result["whatsapp_text"])
@@ -197,6 +205,51 @@ class GPTService:
                 "whatsapp_text": "Thank you for your message. I am unable to fetch your details accurately at the moment. Our team will contact you soon to assist you further.",
                 "machine_payload": {"action": "escalate", "error": str(e)}
             }
+
+    def extract_text_from_image(self, base64_image: str) -> str:
+        """
+        Uses GPT-4o Vision to extract text from a base64 encoded image.
+        Focused on VINs and Part Numbers.
+        """
+        if not self.client:
+            return ""
+
+        system_prompt = """
+        You are an Expert OCR Engine for Automotive Documents.
+        Your job is to transcribe ALL text visible in the image.
+        
+        PRIORITY targets:
+        1. Vehicle Identification Numbers (VIN) - 17 chars. Remove spaces.
+        2. Part Numbers / OEM Codes.
+        3. Part Descriptions.
+        
+        Output format: Just the raw transcribed text. Do not add markdown or conversational filler.
+        """
+        
+        try:
+            response = self.client.chat.completions.create(
+                model="gpt-4o",
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": system_prompt},
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/jpeg;base64,{base64_image}",
+                                    "detail": "high"
+                                }
+                            }
+                        ]
+                    }
+                ],
+                max_tokens=1500
+            )
+            return response.choices[0].message.content.strip()
+        except Exception as e:
+            current_app.logger.error(f"OCR Vision failed: {e}")
+            return ""
 
 
     def extract_entities(self, text: str) -> dict:
@@ -227,6 +280,7 @@ class GPTService:
            - CRITICAL: Exclude vehicle attributes like "Model 318i", "X5", "5 Series", "Year 2020", "Brand BMW".
            - CRITICAL: Exclude generic label text like "Made in Germany", "Manufacturer", "Date", "Weight".
            - ONLY include names of ACTUAL REPLACEMENT PARTS. If unsure, leave empty.
+           - Translate the part names/descriptions to English.
         
         OUTPUT JSON ONLY:
         {
@@ -340,22 +394,22 @@ class GPTService:
         Your job is to REFORMAT the provided text to make it look visually appealing, friendly, and professional.
         
         GUIDELINES:
-        1. Keep the EXACT SAME information/meaning. Do not add new facts.
-        2. Use relevant Emojis (✅, ⚠️, 💰, 🔎) to make it engaging. BUT use a MAXIMUM of 3 emojis in the entire message. Do not overuse them.
-        3. Use key WhatsApp formatting:
+        1. REFORMAT ONLY. Do NOT add greetings ("Hello", "Hi"), sign-offs, or polite conversational filler if they are not in the input.
+        2. Keep the EXACT SAME information/meaning. Do not add new facts.
+        3. Use relevant Emojis (✅, ⚠️, 💰, 🔎) to make it engaging. BUT use a MAXIMUM of 3 emojis in the entire message. Do not overuse them.
+        4. Use key WhatsApp formatting:
            - *Bold* for key terms (Part Names, Prices, Action Items).
            - Bullet points for lists.
            - Separate paragraphs for readability.
-        4. Tone: Helpful, Polite, Efficient.
-        5. DEDUPLICATION: CHECK the Input Text. If it *already* contains "www.carpartsdubai.com" or a sign-off, do NOT add it again in your output. Your job is to format the list, not to add a second footer.
-        6. NO TRUNCATION: You format EVERY single item in the list. Do not summarize. If there are 50 items, format all 50.
-        7. NO CHATTY INTROS: Do NOT say "Here is the reformatted text", or use markdown code blocks/fences. Just output the final text directly.
+        5. DEDUPLICATION: CHECK the Input Text. If it *already* contains "www.carpartsdubai.com" or a sign-off, do NOT add it again in your output.
+        6. NO TRUNCATION: You format EVERY single item in the list. Do not summarize.
+        7. NO CHATTY INTROS/OUTROS: Output ONLY the reformatted text.
         
         INPUT TEXT:
         {raw_text}
         
         OUTPUT:
-        The reformatted text only.
+        The reformatted text only. No greetings.
         """
         
         try:

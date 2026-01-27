@@ -203,7 +203,7 @@ def process_user_message(user_id: str, unified_text: str) -> str:
         else:
             # Not cached or new VIN -> Scrape
             scraper = get_scraper()
-            print(f"IT IS GOING TO FIND THE VIN{current_vin}")
+            print(f"IT IS GOING TO FIND THE VIN {current_vin}")
             if scraper:
                 try:
                     # print(f"Decoding VIN {current_vin} via Scraper...")

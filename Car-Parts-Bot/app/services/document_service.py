@@ -74,8 +74,8 @@ def extract_pdf_content(user_id: str, file_path: str) -> str:
     try:
         with pdfplumber.open(file_path) as pdf:
             if len(pdf.pages) > 5:
-                # Limit pages
-                pass 
+                return "System Notice: The document has more than 5 pages. Please upload a PDF with 5 or fewer pages for processing."
+            
             for page in pdf.pages[:5]:
                 text = page.extract_text()
                 if text:
@@ -91,24 +91,34 @@ def extract_pdf_content(user_id: str, file_path: str) -> str:
              from app.services.message_processor import gpt  # Import the global gpt instance
 
              pdf = pdfium.PdfDocument(file_path)
-             # Process ONLY the 1st page for now (Cost/Latency trade-off)
-             page = pdf[0]
+             page_count = len(pdf)
+             print(f"📄 Document has {page_count} pages.")
              
-             # Render page to bitmap at decent scale (2x is enough for GPT)
-             bitmap = page.render(scale=2) 
-             pil_image = bitmap.to_pil()
-             
-             # Convert to Base64
-             buffered = io.BytesIO()
-             pil_image.save(buffered, format="JPEG")
-             img_str = base64.b64encode(buffered.getvalue()).decode("utf-8")
+             if page_count > 5:
+                 return "System Notice: The document has more than 5 pages. Please upload a PDF with 5 or fewer pages for processing."
 
-             # Call GPT Vision
-             ocr_text = gpt.extract_text_from_image(img_str)
+             ocr_combined = ""
+             for i in range(page_count):
+                 print(f"   --> Processing Page {i+1}/{page_count} via GPT Vision...")
+                 page = pdf[i]
+                 
+                 # Render page to bitmap at decent scale (2x is enough for GPT)
+                 bitmap = page.render(scale=2) 
+                 pil_image = bitmap.to_pil()
+                 
+                 # Convert to Base64
+                 buffered = io.BytesIO()
+                 pil_image.save(buffered, format="JPEG")
+                 img_str = base64.b64encode(buffered.getvalue()).decode("utf-8")
+
+                 # Call GPT Vision
+                 page_ocr = gpt.extract_text_from_image(img_str)
+                 if page_ocr:
+                     ocr_combined += f"\n--- Page {i+1} ---\n{page_ocr}"
              
-             if len(ocr_text.strip()) > 10:
-                 print(f"✅ GPT OCR Success: Extracted {len(ocr_text)} chars.")
-                 text_content += f"\n[GPT Vision Extracted]:\n{ocr_text}"
+             if len(ocr_combined.strip()) > 10:
+                 print(f"✅ GPT OCR Success: Extracted {len(ocr_combined)} chars.")
+                 text_content += f"\n[GPT Vision Extracted]:\n{ocr_combined}"
              else:
                  print("⚠️ GPT OCR yielded low/no text.")
                  
@@ -120,12 +130,15 @@ def extract_pdf_content(user_id: str, file_path: str) -> str:
 
 def extract_excel_content(file_path: str, ext: str) -> str:
     try:
+        # Limit to 30 rows check
         if ext == ".csv":
-            df = pd.read_csv(file_path)
+            df = pd.read_csv(file_path, nrows=31)
         else:
-            df = pd.read_excel(file_path)
+            df = pd.read_excel(file_path, nrows=31)
         
-        # Convert first few rows to string representation
-        return df.to_string(index=False, max_rows=20)
+        if len(df) > 30:
+             return "System Notice: The Excel/CSV file has more than 30 rows. Please upload a file with 30 or fewer rows for processing."
+
+        return df.to_string(index=False)
     except Exception:
         return "Could not parse Excel content."

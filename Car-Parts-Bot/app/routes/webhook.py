@@ -83,7 +83,7 @@ def receive_message():
                         print("⚠️ Redis dedupe failed:", e)
 
                     try:
-                        task_queue.enqueue(process_whatsapp_message, user_id, text, "text")
+                        task_queue.enqueue(process_whatsapp_message, user_id, text, "text", job_timeout=600)
                     except Exception as e:
                         print("❌ RQ enqueue failed:", e)
 
@@ -102,7 +102,7 @@ def receive_message():
                         print("⚠️ Redis dedupe failed:", e)
 
                     try:
-                        task_queue.enqueue(process_whatsapp_message, user_id, img_media_id, "image")
+                        task_queue.enqueue(process_whatsapp_message, user_id, img_media_id, "image", job_timeout=600)
                     except Exception as e:
                         print("❌ RQ enqueue failed:", e)
 
@@ -122,7 +122,7 @@ def receive_message():
 
                     try:
                     # 🚀 Send to worker for transcription + GPT + reply
-                        task_queue.enqueue(process_whatsapp_message, user_id, media_id, "audio")
+                        task_queue.enqueue(process_whatsapp_message, user_id, media_id, "audio", job_timeout=600)
                     except Exception as e:
                         print("❌ RQ enqueue failed:", e)
 
@@ -146,7 +146,7 @@ def receive_message():
                         print("⚠️ Redis dedupe failed:", e)
 
                     try:
-                        task_queue.enqueue(process_whatsapp_message, user_id, media_id, "document", filename)
+                        task_queue.enqueue(process_whatsapp_message, user_id, media_id, "document", filename, job_timeout=600)
                     except Exception as e:
                         print("❌ RQ enqueue failed:", e)
 

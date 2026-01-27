@@ -8,6 +8,7 @@ export default function PromptModal({ data, onClose, onSaved, onLogout }) {
   const [displayName, setDisplayName] = useState(data?.display_name || '');
   const [intentType, setIntentType] = useState(data?.intent_type || 'text');
   const [promptText, setPromptText] = useState(data?.prompt_text || '');
+  const [partsAliasText, setPartsAliasText] = useState(data?.parts_alias_text || '');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [referenceFile, setReferenceFile] = useState(null);
@@ -23,6 +24,7 @@ export default function PromptModal({ data, onClose, onSaved, onLogout }) {
       setDisplayName(data.display_name || "");
       setIntentType(data.intent_type || "text");
       setPromptText(data.prompt_text || "");
+      setPartsAliasText(data.parts_alias_text || "");
       setExistingFile(data.reference_file || null);
       setReferenceFile(null); // never auto-reselect file
     } else {
@@ -31,6 +33,7 @@ export default function PromptModal({ data, onClose, onSaved, onLogout }) {
       setDisplayName("");
       setIntentType("text");
       setPromptText("");
+      setPartsAliasText("");
       setExistingFile(null);
       setReferenceFile(null);
     }
@@ -56,6 +59,7 @@ export default function PromptModal({ data, onClose, onSaved, onLogout }) {
       // common fields
       formData.append("display_name", displayName.trim());
       formData.append("prompt_text", promptText.trim());
+      formData.append("parts_alias_text", partsAliasText.trim());
       formData.append("intent_type", "super_intent");
 
       // only on CREATE
@@ -105,7 +109,7 @@ export default function PromptModal({ data, onClose, onSaved, onLogout }) {
 
   return (
     <div className="fixed inset-0 flex justify-center items-center bg-black/50 z-50">
-      <div className="bg-white p-6 rounded-xl w-[800px] space-y-4">
+      <div className="bg-white p-6 rounded-xl w-[1300px] space-y-4 max-h-[95vh] overflow-y-auto">
 
         <h2 className="text-xl font-semibold">
           {data ? 'Edit Prompt' : 'Create Prompt'}
@@ -136,16 +140,32 @@ export default function PromptModal({ data, onClose, onSaved, onLogout }) {
           disabled={loading}
         />
 
-        {/* Intent Type REMOVED - Unified Flow */}
+        {/* Side-by-Side Area */}
+        <div className="flex gap-4">
+          {/* Prompt Text (Left) */}
+          <div className="flex-1 space-y-2">
+            <label className="text-xs font-semibold uppercase text-gray-500">System Prompt</label>
+            <textarea
+              className="w-full p-2 border rounded h-[400px]"
+              placeholder="Prompt text"
+              value={promptText}
+              onChange={(e) => setPromptText(e.target.value)}
+              disabled={loading}
+            />
+          </div>
 
-        {/* Prompt Text */}
-        <textarea
-          className="w-full p-2 border rounded h-96"
-          placeholder="Prompt text"
-          value={promptText}
-          onChange={(e) => setPromptText(e.target.value)}
-          disabled={loading}
-        />
+          {/* Parts Alias Text (Right) */}
+          <div className="flex-1 space-y-2">
+            <label className="text-xs font-semibold uppercase text-gray-500">Parts Aliases (Normalization)</label>
+            <textarea
+              className="w-full p-2 border rounded h-[400px] font-mono text-sm"
+              placeholder="bonnet -> hood"
+              value={partsAliasText}
+              onChange={(e) => setPartsAliasText(e.target.value)}
+              disabled={loading}
+            />
+          </div>
+        </div>
 
         {/* Reference File Section (Always Available) */}
         <div>

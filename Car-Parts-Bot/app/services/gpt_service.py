@@ -252,42 +252,86 @@ class GPTService:
             return ""
 
 
-    def extract_entities(self, text: str) -> dict:
+    def _normalize_part_names(self, raw_parts: List[str]) -> List[str]:
         """
-        Pure Entity Extraction (No Intent Routing).
-        Extracts:
-        - VINs (17 chars)
-        - Part Numbers (alphanumeric codes)
-        - Part Names (free text descriptions)
+        Takes a list of raw part names (e.g. "boot", "fly wheel") and normalizes them
+        according to the 'parts_alias_text' defined in the Super Intent.
         """
-        if not self.client:
-            return {"vin_list": [], "part_numbers": [], "item_descriptions": []}
+        if not raw_parts:
+            return []
 
+        # 1. Fetch Normalization Rules
+        normalization_rules = ""
+        try:
+            prompt_row = IntentPrompt.query.filter_by(intent_key="super_intent").first()
+            if prompt_row and prompt_row.parts_alias_text:
+                normalization_rules = prompt_row.parts_alias_text
+        except Exception:
+            return raw_parts # Fallback to raw if DB fails
+
+        if not normalization_rules:
+            return raw_parts
+
+        # 2. Run FAST GPT Check
+        system_prompt = f"""
+        You are a Part Name Normalizer.
+        
+        INPUT: List of part names.
+        OUTPUT: JSON object with key "normalized" containing the list.
+
+        TRANSFORMATION RULES:
+        {normalization_rules}
+        
+        INSTRUCTIONS:
+        - If a part match a rule, swap it (e.g. "bonnet" -> "hood").
+        - If no match, keep original.
+        - Fix spacing (e.g. "waterpump" -> "water pump").
+        - Remove generic words like "price", "cost", "genuine".
+        
+        EXAMPLE OUTPUT:
+        {{ "normalized": ["hood", "oil filter"] }}
+        """
+
+        try:
+            response = self.client.chat.completions.create(
+                model="gpt-4o-mini", # Fast model is fine here
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": json.dumps(raw_parts)},
+                ],
+                temperature=0.0,
+                response_format={"type": "json_object"}
+            )
+            data = json.loads(response.choices[0].message.content)
+            # Expecting {"parts": [...]} or just a list? 
+            # Let's force a structured output or just parse the list.
+            # actually better to ask for {"normalized": []}
+            return data.get("normalized", raw_parts)
+        except Exception as e:
+            current_app.logger.error(f"Normalization failed: {e}")
+            return raw_parts
+
+
+    def _extract_part_names_only(self, text: str) -> List[str]:
+        """
+        Specialized extractor just for Part Names.
+        designed to be LOOSE and catch "boot", "glass", "rubber" etc.
+        """
         system_prompt = """
-        You are an Entity Extractor API. Your job is to extract vehicle information and part identifiers from user text.
+        You are a Car Part Detector.
+        Your ONLY Job is to list words/phrases from the input that refer to a CAR PART.
         
-        EXTRACT THESE ENTITIES:
-        1. "vin_list": List of 17-character VINs (alphanumeric, exclude I,O,Q check if possible).
-        2. "part_numbers": List of part numbers or OEM codes. 
-           - RULES: 
-             - Capture ANY alphanumeric sequence that looks like a part identifier.
-             - Capture sequences with spaces/dashes if they look like a single unit (e.g. "19 475 MM", "81-22-9-407-758").
-             - If the user explicitly says "part number X" or "number is X", ALWAYS extract X as a part number, even if it looks like a dimension (e.g. "19 inch").
-             - Minimal length 3 chars.
-             - Ignore common words unless they are part of the ID.
-        3. "item_descriptions": List of part names/descriptions (e.g. "brake pad", "oil filter").
-           - Exclude the part numbers themselves.
-           - CRITICAL: Exclude vehicle attributes like "Model 318i", "X5", "5 Series", "Year 2020", "Brand BMW".
-           - CRITICAL: Exclude generic label text like "Made in Germany", "Manufacturer", "Date", "Weight".
-           - ONLY include names of ACTUAL REPLACEMENT PARTS. If unsure, leave empty.
-           - Translate the part names/descriptions to English.
+        RULES:
+        - Include slang (e.g. "boot", "rims", "rubber").
+        - Include generic terms (e.g. "lights", "glass", "filter").
+        - **EXCLUDE** the word "part" or "parts" itself. Only extracting specific component names.
+        - IGNORE matching it to a database. Just extract what the user said.
+        - IGNORE vehicle models ("BMW", "318i") or years ("2012").
+        - Output JSON list.
         
-        OUTPUT JSON ONLY:
-        {
-            "vin_list": [],
-            "part_numbers": [],
-            "item_descriptions": []
-        }
+        EXAMPLE: 
+        Input: "I need boot and side mirror for BMW" 
+        Output: {"parts": ["boot", "side mirror"]}
         """
         try:
             response = self.client.chat.completions.create(
@@ -299,7 +343,64 @@ class GPTService:
                 temperature=0.0,
                 response_format={"type": "json_object"}
             )
-            return json.loads(response.choices[0].message.content)
+            data = json.loads(response.choices[0].message.content)
+            return data.get("parts", [])
+        except Exception as e:
+            current_app.logger.error(f"Part name extraction failed: {e}")
+            return []
+
+    def extract_entities(self, text: str) -> dict:
+        """
+        Pure Entity Extraction (No Intent Routing).
+        Extracts:
+        - VINs (17 chars)
+        - Part Numbers (alphanumeric codes)
+        - Part Names (via dedicated sub-agent)
+        """
+        if not self.client:
+            return {"vin_list": [], "part_numbers": [], "item_descriptions": []}
+
+        # 1. Main Extraction (VINs + Numbers)
+        system_prompt = """
+        You are an Entity Extractor API. 
+        
+        EXTRACT THESE ENTITIES:
+        1. "vin_list": List of 17-character VINs (alphanumeric, exclude I,O,Q check if possible).
+           - PRIORITY: Capture any 17-char VIN immediately.
+
+        2. "part_numbers": List of part numbers or OEM codes. 
+           - Capture alphanumeric sequences (min 3 chars).
+        
+        OUTPUT JSON ONLY:
+        {
+            "vin_list": [],
+            "part_numbers": []
+        }
+        """
+        try:
+            response = self.client.chat.completions.create(
+                model="gpt-4o", 
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": text},
+                ],
+                temperature=0.0,
+                response_format={"type": "json_object"}
+            )
+            result = json.loads(response.choices[0].message.content)
+            
+            # 2. Dedicated Part Name Extraction (Loose)
+            raw_parts = self._extract_part_names_only(text)
+            
+            # 3. Normalize Part Names (Strict)
+            if raw_parts:
+                normalized_parts = self._normalize_part_names(raw_parts)
+                result["item_descriptions"] = normalized_parts
+            else:
+                result["item_descriptions"] = []
+                
+            return result
+            
         except Exception:
             return {"vin_list": [], "part_numbers": [], "item_descriptions": []}
 
@@ -401,7 +502,7 @@ class GPTService:
            - *Bold* for key terms (Part Names, Prices, Action Items).
            - Bullet points for lists.
            - Separate paragraphs for readability.
-        5. DEDUPLICATION: CHECK the Input Text. If it *already* contains "www.carpartsdubai.com" or a sign-off, do NOT add it again in your output.
+        5. DEDUPLICATION(MANDATORY): CHECK the Input Text. If it *already* contains "www.carpartsdubai.com" or a sign-off, do NOT add it again in your output.
         6. NO TRUNCATION: You format EVERY single item in the list. Do not summarize.
         7. NO CHATTY INTROS/OUTROS: Output ONLY the reformatted text.
         

@@ -14,32 +14,6 @@ class TimestampMixin:
         nullable=False,
     )
 
-# class Vehicle(db.Model, TimestampMixin):
-#     __tablename__ = "vehicles"
-
-#     id = db.Column(db.Integer, primary_key=True)
-#     make = db.Column(db.String(64), index=True, nullable=False)
-#     model = db.Column(db.String(64), index=True, nullable=False)
-#     year = db.Column(db.String(16), index=True, nullable=True)
-#     chassis_number = db.Column(db.String(64), unique=True, index=True, nullable=True)
-
-#     parts = db.relationship("Part", back_populates="vehicle", lazy=True)
-
-
-# class Part(db.Model, TimestampMixin):
-#     __tablename__ = "parts"
-
-#     id = db.Column(db.Integer, primary_key=True)
-#     part_number = db.Column(db.String(128), unique=False, index=True, nullable=False)
-#     name = db.Column(db.String(256), index=True, nullable=False)
-#     brand = db.Column(db.String(128), index=True, nullable=True)
-#     price = db.Column(db.Numeric(12, 2), nullable=True)
-#     quantity_min = db.Column(db.Integer, nullable=True)
-
-#     vehicle_id = db.Column(db.Integer, db.ForeignKey("vehicles.id"), nullable=True)
-#     vehicle = db.relationship("Vehicle", back_populates="parts")
-
-
 class Lead(db.Model, TimestampMixin):
     __tablename__ = "leads"
 
@@ -84,6 +58,8 @@ class IntentPrompt(db.Model):
     reference_file = db.Column(db.String(255), nullable=True)
     # extracted text from file (cached)
     reference_text = db.Column(db.Text, nullable=True)
+    # Normalization rules for entity extraction
+    parts_alias_text = db.Column(db.Text, nullable=True)
     is_active = db.Column(db.Boolean, default=True)
 
 

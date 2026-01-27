@@ -193,6 +193,7 @@ def list_prompts():
             "intent_type": p.intent_type,
             "prompt_text": p.prompt_text,
             "reference_file": p.reference_file,  # 🔥 REQUIRED
+            "parts_alias_text": p.parts_alias_text, # Added alias text
             "is_active": p.is_active,
         }
         for p in prompts
@@ -207,6 +208,7 @@ def create_prompt():
     intent_key = data.get("intent_key", "").strip().lower()
     display_name = data.get("display_name", "").strip()
     prompt_text = data.get("prompt_text", "").strip()
+    parts_alias_text = data.get("parts_alias_text", "").strip()
     intent_type = data.get("intent_type", "text").strip()
 
     if not intent_key or not display_name or not prompt_text:
@@ -250,6 +252,7 @@ def create_prompt():
         intent_type=intent_type,
         reference_file=reference_file,
         reference_text=reference_text,
+        parts_alias_text=parts_alias_text,
         is_active=True,
     )
 
@@ -274,6 +277,8 @@ def update_prompt(prompt_id):
 
     prompt.display_name = data.get("display_name", prompt.display_name).strip()
     prompt.prompt_text = data.get("prompt_text", prompt.prompt_text).strip()
+    if "parts_alias_text" in data:
+        prompt.parts_alias_text = data.get("parts_alias_text", "").strip()
 
     intent_type = data.get("intent_type", prompt.intent_type).strip()
     # Relaxed validation

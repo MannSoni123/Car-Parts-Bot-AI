@@ -147,7 +147,8 @@ class GPTService:
              strict_instructions.append("CRITICAL: The catalog search returned NO results. You MUST reply: 'Not in Catalog'. Do not offer to search again.")
 
         if len(parts) >= 1:
-            strict_instructions.append(f"CRITICAL: {len(parts)} parts have been found in the database matching the user's request. You MUST present these parts (Product Name, Brand, Price, Availability). Do NOT ask the user what they are looking for, because the search was successful!")
+            strict_instructions.append(f"CRITICAL: {len(parts)} parts have been found in the database matching the user's request. You MUST present these parts (Product Name, Brand, Price, Availability). You SHOULD briefly acknowledge the user's specific issue (e.g. 'I see the door handle is broken') derived from the input before listing the parts.")
+            # strict_instructions.append(f"CRITICAL: {len(parts)} parts have been found in the database matching the user's request. You MUST present these parts (Product Name, Brand, Price, Availability). Do NOT ask the user what they are looking for, because the search was successful!")
 
         # --- MULTIPLE parts enforcement ---
         if len(parts) > 1:
@@ -404,79 +405,79 @@ class GPTService:
         except Exception:
             return {"vin_list": [], "part_numbers": [], "item_descriptions": []}
 
-    def execute_specific_intent(
-        self,
-        intent_key: str,
-        user_text: str,
-        context_data: dict,
-    ) -> dict:
-        """
-        Execute a SPECIFIC intent (e.g. 'warning_light') bypassing the Super Intent router.
-        Fetches the prompt + reference text from DB and runs it.
-        """
-        if not self.client:
-            return {
-                "whatsapp_text": "System error: OpenAI client not configured.",
-                "machine_payload": {"action": "escalate", "error": "no_client"}
-            }
+    # def execute_specific_intent(
+    #     self,
+    #     intent_key: str,
+    #     user_text: str,
+    #     context_data: dict,
+    # ) -> dict:
+    #     """
+    #     Execute a SPECIFIC intent (e.g. 'warning_light') bypassing the Super Intent router.
+    #     Fetches the prompt + reference text from DB and runs it.
+    #     """
+    #     if not self.client:
+    #         return {
+    #             "whatsapp_text": "System error: OpenAI client not configured.",
+    #             "machine_payload": {"action": "escalate", "error": "no_client"}
+    #         }
 
-        # 1. Fetch Dynamic Prompt
-        try:
-            prompt_row = IntentPrompt.query.filter_by(intent_key=intent_key, is_active=True).first()
-        except Exception:
-            prompt_row = None
+    #     # 1. Fetch Dynamic Prompt
+    #     try:
+    #         prompt_row = IntentPrompt.query.filter_by(intent_key=intent_key, is_active=True).first()
+    #     except Exception:
+    #         prompt_row = None
         
-        if not prompt_row:
-            # Fallback if specific intent lookup fails -> Run Super Intent? 
-            # Or return error. For now, let's log and fallback.
-            print(f"⚠️ Specific intent '{intent_key}' not found or inactive. Falling back to Super Intent.")
-            return self.run_super_intent(user_text, context_data)
+    #     if not prompt_row:
+    #         # Fallback if specific intent lookup fails -> Run Super Intent? 
+    #         # Or return error. For now, let's log and fallback.
+    #         print(f"⚠️ Specific intent '{intent_key}' not found or inactive. Falling back to Super Intent.")
+    #         return self.run_super_intent(user_text, context_data)
 
-        # 2. Construct System Message
-        base_prompt = prompt_row.prompt_text or "You are a helpful assistant."
-        reference_text = prompt_row.reference_text or ""
+    #     # 2. Construct System Message
+    #     base_prompt = prompt_row.prompt_text or "You are a helpful assistant."
+    #     reference_text = prompt_row.reference_text or ""
 
-        system_message = f"""
-        {base_prompt}
+    #     system_message = f"""
+    #     {base_prompt}
 
-        === REFERENCE MATERIAL (STRICTLY FOLLOW THIS) ===
-        {reference_text}
+    #     === REFERENCE MATERIAL (STRICTLY FOLLOW THIS) ===
+    #     {reference_text}
         
-        === CONTEXT ===
-        User Input: "{user_text}"
-        Vehicle Context: {context_data.get('vin_info') or 'None'}
-        """
+    #     === CONTEXT ===
+    #     User Input: "{user_text}"
+    #     Vehicle Context: {context_data.get('vin_info') or 'None'}
+    #     """
 
-        # 3. Execute
-        try:
-            response = self.client.chat.completions.create(
-                model=current_app.config.get("OPENAI_MODEL", "gpt-4o-mini"),
-                messages=[
-                    {"role": "system", "content": system_message},
-                    {"role": "user", "content": user_text},
-                ],
-                temperature=0.3,
-                max_tokens=800
-            )
+    #     # 3. Execute
+    #     try:
+    #         response = self.client.chat.completions.create(
+    #             model=current_app.config.get("OPENAI_MODEL", "gpt-4o-mini"),
+    #             messages=[
+    #                 {"role": "system", "content": system_message},
+    #                 {"role": "user", "content": user_text},
+    #             ],
+    #             temperature=0.3,
+    #             max_tokens=800
+    #         )
             
-            reply_text = response.choices[0].message.content.strip()
+    #         reply_text = response.choices[0].message.content.strip()
             
-            # Wrap in standard format
-            return {
-                "whatsapp_text": reply_text,
-                "machine_payload": {
-                    "intent": intent_key,
-                    "action": "reply",
-                    "confidence": 1.0
-                }
-            }
+    #         # Wrap in standard format
+    #         return {
+    #             "whatsapp_text": reply_text,
+    #             "machine_payload": {
+    #                 "intent": intent_key,
+    #                 "action": "reply",
+    #                 "confidence": 1.0
+    #             }
+    #         }
 
-        except Exception as e:
-            current_app.logger.error(f"Specific Intent '{intent_key}' failed: {e}")
-            return {
-                "whatsapp_text": "I encountered an error processing your request.",
-                "machine_payload": {"action": "error", "error": str(e)}
-            }
+    #     except Exception as e:
+    #         current_app.logger.error(f"Specific Intent '{intent_key}' failed: {e}")
+    #         return {
+    #             "whatsapp_text": "I encountered an error processing your request.",
+    #             "machine_payload": {"action": "error", "error": str(e)}
+    #         }
 
 
     def _format_as_sales_agent(self, raw_text: str) -> str:

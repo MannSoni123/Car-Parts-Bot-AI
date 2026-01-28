@@ -48,6 +48,44 @@ def receive_message():
             contacts = value.get("contacts", [])
             user_id = contacts[0]["wa_id"] if contacts else None
 
+
+            # --- BATCHING LOGIC HELPER ---
+            def buffer_and_enqueue(u_id, m_type, m_content, m_extra=None):
+                """
+                1. Push to Redis list
+                2. Check if collector active
+                3. If not, start collector task
+                """
+                # JSON payloads
+                item = {
+                    "type": m_type,
+                    "content": m_content,
+                    "extra": m_extra,
+                    "ts": datetime.utcnow().isoformat()
+                }
+                redis_key = f"user:{u_id}:buffer"
+                lock_key = f"user:{u_id}:collecting"
+
+                try:
+                    # 1. Push
+                    redis_client.rpush(redis_key, json.dumps(item))
+                    redis_client.expire(redis_key, 60) # Clean up if stale
+
+                    # 2. Check Lock
+                    if not redis_client.exists(lock_key):
+                        print(f"🚀 Starting Batch Collector for {u_id}")
+                        redis_client.setex(lock_key, 20, "1") # 20s lock for 6s wait (safety)
+                        # Enqueue the COLLECTOR task, not the processor
+                        # Note: We import collect_and_process_batch dynamically or ensure it's available
+                        from ..tasks import collect_and_process_batch
+                        task_queue.enqueue(collect_and_process_batch, u_id, job_timeout=600)
+                    else:
+                        print(f"📥 Buffering item for {u_id} (Collector active)")
+                except Exception as ex:
+                    print(f"❌ Redis Buffering Failed: {ex}")
+                    # Fallback: Process immediately if Redis fails?
+                    # For now just log.
+
             for msg in messages:
 
                 msg_id = msg.get("id")
@@ -82,10 +120,12 @@ def receive_message():
                     except Exception as e:
                         print("⚠️ Redis dedupe failed:", e)
 
-                    try:
-                        task_queue.enqueue(process_whatsapp_message, user_id, text, "text", job_timeout=600)
-                    except Exception as e:
-                        print("❌ RQ enqueue failed:", e)
+                    # try:
+                    #     task_queue.enqueue(process_whatsapp_message, user_id, text, "text", job_timeout=600)
+                    # except Exception as e:
+                    #     print("❌ RQ enqueue failed:", e)
+                    # BUFFER instead of Enqueue
+                    buffer_and_enqueue(user_id, "text", text)
 
                 elif msg_type == "image":
                     img_media_id = msg["image"]["id"]
@@ -101,10 +141,12 @@ def receive_message():
                     except Exception as e:
                         print("⚠️ Redis dedupe failed:", e)
 
-                    try:
-                        task_queue.enqueue(process_whatsapp_message, user_id, img_media_id, "image", job_timeout=600)
-                    except Exception as e:
-                        print("❌ RQ enqueue failed:", e)
+                    # try:
+                    #     task_queue.enqueue(process_whatsapp_message, user_id, img_media_id, "image", job_timeout=600)
+                    # except Exception as e:
+                    #     print("❌ RQ enqueue failed:", e)
+                    # BUFFER
+                    buffer_and_enqueue(user_id, "image", img_media_id)
 
                 elif msg_type == "audio":
                     media_id = msg["audio"]["id"]
@@ -120,11 +162,13 @@ def receive_message():
                     except Exception as e:
                         print("⚠️ Redis dedupe failed:", e)
 
-                    try:
-                    # 🚀 Send to worker for transcription + GPT + reply
-                        task_queue.enqueue(process_whatsapp_message, user_id, media_id, "audio", job_timeout=600)
-                    except Exception as e:
-                        print("❌ RQ enqueue failed:", e)
+                    # try:
+                    # # 🚀 Send to worker for transcription + GPT + reply
+                    #     task_queue.enqueue(process_whatsapp_message, user_id, media_id, "audio", job_timeout=600)
+                    # except Exception as e:
+                    #     print("❌ RQ enqueue failed:", e)
+                    # BUFFER
+                    buffer_and_enqueue(user_id, "audio", media_id)
 
                 elif msg_type == "document":
                     doc = msg.get("document", {})
@@ -145,10 +189,12 @@ def receive_message():
                     except Exception as e:
                         print("⚠️ Redis dedupe failed:", e)
 
-                    try:
-                        task_queue.enqueue(process_whatsapp_message, user_id, media_id, "document", filename, job_timeout=600)
-                    except Exception as e:
-                        print("❌ RQ enqueue failed:", e)
+                    # try:
+                    #     task_queue.enqueue(process_whatsapp_message, user_id, media_id, "document", filename, job_timeout=600)
+                    # except Exception as e:
+                    #     print("❌ RQ enqueue failed:", e)
+                    # BUFFER
+                    buffer_and_enqueue(user_id, "document", media_id, filename)
 
     # ALWAYS only one final response
     return jsonify({"status": "ok"}), 200

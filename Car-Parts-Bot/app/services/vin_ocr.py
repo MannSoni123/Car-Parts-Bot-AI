@@ -22,12 +22,12 @@ from openai import OpenAI
 # Utility: VIN Extractor
 # --------------------------
 
-def extract_vin_from_text(text: str) -> str | None:
-    """
-    Extract a standard 17-character VIN.
-    """
-    match = re.search(r"[A-HJ-NPR-Za-hj-npr-z0-9]{17}", text)
-    return match.group(0) if match else None
+# def extract_vin_from_text(text: str) -> str | None:
+#     """
+#     Extract a standard 17-character VIN.
+#     """
+#     match = re.search(r"[A-HJ-NPR-Za-hj-npr-z0-9]{17}", text)
+#     return match.group(0) if match else None
 
 
 # --------------------------
@@ -66,27 +66,27 @@ def download_media_blob(media_id: str) -> Tuple[bytes, str | None]:
     return blob_resp.content, mime_type or blob_resp.headers.get("Content-Type")
 
 
-# --------------------------
-# MAIN: VIN OCR Runner
-# --------------------------
+# # --------------------------
+# # MAIN: VIN OCR Runner
+# # --------------------------
 
-def run_chassis_ocr(img_bytes: bytes, content_type: str) -> Dict[str, Any]:
-    """
-    Runs OCR using GPT Vision (recommended) OR local Tesseract.
-    Returns:
-      { "text": "...", "chassis": "...", "confidence": 0.9 }
-    """
-    provider = (current_app.config.get("IMAGE_OCR_PROVIDER") or "gpt").lower()
+# def run_chassis_ocr(img_bytes: bytes, content_type: str) -> Dict[str, Any]:
+#     """
+#     Runs OCR using GPT Vision (recommended) OR local Tesseract.
+#     Returns:
+#       { "text": "...", "chassis": "...", "confidence": 0.9 }
+#     """
+#     provider = (current_app.config.get("IMAGE_OCR_PROVIDER") or "gpt").lower()
 
-    if provider in {"gpt", "openai", "vision"}:
-        print("🤖 Running OCR via OpenAI Vision...")
-        return _run_openai_vision_ocr(img_bytes, content_type)
+#     if provider in {"gpt", "openai", "vision"}:
+#         print("🤖 Running OCR via OpenAI Vision...")
+#         return _run_openai_vision_ocr(img_bytes, content_type)
 
-    elif provider in {"tesseract", "local"}:
-        print("🖥️ Running OCR via local Tesseract...")
-        return _run_local_tesseract_ocr(img_bytes)
+#     elif provider in {"tesseract", "local"}:
+#         print("🖥️ Running OCR via local Tesseract...")
+#         return _run_local_tesseract_ocr(img_bytes)
 
-    raise RuntimeError(f"Unsupported OCR provider: {provider}")
+#     raise RuntimeError(f"Unsupported OCR provider: {provider}")
 
 
 # --------------------------
@@ -117,7 +117,7 @@ def extract_text_from_image(img_bytes: bytes, content_type: str) -> str:
                     ]
                 }
             ],
-            max_tokens=300
+            max_tokens=1000
         )
         return response.choices[0].message.content.strip()
     except Exception as e:
@@ -126,58 +126,58 @@ def extract_text_from_image(img_bytes: bytes, content_type: str) -> str:
 
 
 
-def _parse_json_response(payload: str) -> Tuple[str, float]:
-    """Parse JSON returned by GPT Vision."""
-    try:
-        clean = payload.strip()
+# def _parse_json_response(payload: str) -> Tuple[str, float]:
+#     """Parse JSON returned by GPT Vision."""
+#     try:
+#         clean = payload.strip()
 
-        # Remove markdown fences
-        if clean.startswith("```"):
-            clean = "\n".join(clean.splitlines()[1:-1])
+#         # Remove markdown fences
+#         if clean.startswith("```"):
+#             clean = "\n".join(clean.splitlines()[1:-1])
 
-        data = json.loads(clean)
+#         data = json.loads(clean)
 
-        # Accept multiple possible field names
-        text = (
-            data.get("text") or
-            data.get("vin") or
-            data.get("VIN") or
-            data.get("chassis") or
-            data.get("chassis_number") or
-            ""
-        )
+#         # Accept multiple possible field names
+#         text = (
+#             data.get("text") or
+#             data.get("vin") or
+#             data.get("VIN") or
+#             data.get("chassis") or
+#             data.get("chassis_number") or
+#             ""
+#         )
 
-        confidence = float(
-            data.get("confidence") or
-            data.get("score") or
-            0.7
-        )
+#         confidence = float(
+#             data.get("confidence") or
+#             data.get("score") or
+#             0.7
+#         )
 
-        return text.strip(), confidence
+#         return text.strip(), confidence
 
-    except Exception as exc:
-        print("❌ JSON parse failed:", exc)
-        return payload.strip(), 0.6
+#     except Exception as exc:
+#         print("❌ JSON parse failed:", exc)
+#         return payload.strip(), 0.6
 
 
-# --------------------------
-# Option B: Local Tesseract OCR
-# --------------------------
+# # --------------------------
+# # Option B: Local Tesseract OCR
+# # --------------------------
 
-def _run_local_tesseract_ocr(img_bytes: bytes) -> Dict[str, Any]:
-    """If someone wants to use local OCR instead of GPT."""
+# def _run_local_tesseract_ocr(img_bytes: bytes) -> Dict[str, Any]:
+#     """If someone wants to use local OCR instead of GPT."""
 
-    try:
-        from PIL import Image
-        import pytesseract
-    except Exception:
-        raise RuntimeError("Tesseract not installed. Switch provider to GPT.")
+#     try:
+#         from PIL import Image
+#         import pytesseract
+#     except Exception:
+#         raise RuntimeError("Tesseract not installed. Switch provider to GPT.")
 
-    image = Image.open(io.BytesIO(img_bytes)).convert("L")
-    text = pytesseract.image_to_string(image)
-    chassis = extract_vin_from_text(text)
-    return {
-        "text": text,
-        "chassis": chassis,
-        "confidence": 0.7,
-    }
+#     image = Image.open(io.BytesIO(img_bytes)).convert("L")
+#     text = pytesseract.image_to_string(image)
+#     chassis = extract_vin_from_text(text)
+#     return {
+#         "text": text,
+#         "chassis": chassis,
+#         "confidence": 0.7,
+#     }

@@ -45,7 +45,7 @@ class PartSouqXPathScraper:
                 SCRAPER_API_BASE,
                 params=payload,
                 headers=HEADERS,         # ✅ THIS IS THE FIX
-                timeout=60
+                timeout=25
             )
 
             if resp.status_code != 200 or not resp.content:

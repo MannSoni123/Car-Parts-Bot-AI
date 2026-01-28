@@ -235,14 +235,15 @@ def process_user_message(user_id: str, unified_text: str) -> str:
         should_validate_brand = True
     elif vin_info and (part_numbers or item_descriptions):
         should_validate_brand = True
-    
+    # print(vin_info)
     if should_validate_brand and vin_info:
         brand = vin_info.get("brand", "").lower()
         supported = ["bmw", "mercedes", "benz", "rolls royce", "mini", "honda"]
         
         # Check if any supported keyword is in the brand string
         is_supported = any(s in brand for s in supported)
-        
+        if brand == "n/a":
+            return "Catelog data not found for this VIN"
         if not is_supported:
             print(f"⛔ Unsupported Brand: {brand}. Rejecting (Not a Warning Light).")
             

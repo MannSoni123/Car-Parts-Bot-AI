@@ -195,6 +195,7 @@ def process_user_message(user_id: str, unified_text: str) -> str:
 
     # Decode VIN if we have one (or use cached)
     if current_vin:
+        # session["vin_details"] = None # TEMPORARY: Clear cache to force re-scrape
         cached_info = session.get("vin_details")
         # Check cache first
         if cached_info and cached_info.get("vin") == current_vin:
@@ -218,6 +219,8 @@ def process_user_message(user_id: str, unified_text: str) -> str:
                         # Cache it
                         session["vin_details"] = vin_info
                         save_session(user_id, session)
+                    else:
+                        return "At the moment, we are unable to clearly understand or access your requirement.\n Our team will review the details and reach out to you shortly to provide the necessary assistance.😊"
                 except Exception as e:
                     print(f"⚠️ VIN Decode Warning (non-fatal): {e}")
                     # If scrape fails, we just proceed without vehicle details. 
@@ -243,7 +246,7 @@ def process_user_message(user_id: str, unified_text: str) -> str:
         # Check if any supported keyword is in the brand string
         is_supported = any(s in brand for s in supported)
         if brand == "n/a":
-            return "Catelog data not found for this VIN"
+            return "At the moment, we are unable to clearly understand or access your requirement.\n Our team will review the details and reach out to you shortly to provide the necessary assistance.😊"
         if not is_supported:
             print(f"⛔ Unsupported Brand: {brand}. Rejecting (Not a Warning Light).")
             
@@ -260,10 +263,16 @@ def process_user_message(user_id: str, unified_text: str) -> str:
 
     # B. Part Search
     parts_found = []
+    missing_pns = []
     
     # 1. Search by Part Number (Highest Priority)
     if part_numbers:
-        parts_found.extend(search_parts_in_db(part_numbers))
+        db_results = search_parts_in_db(part_numbers)
+        parts_found.extend(db_results)
+        
+        # Calculate missing PNs
+        found_pns_set = {normalize_part_number(p['part_number']) for p in db_results}
+        missing_pns = [pn for pn in part_numbers if normalize_part_number(pn) not in found_pns_set]
         
     # 2. Search by Name (If VIN exists)
     if current_vin and item_descriptions and not parts_found:
@@ -277,7 +286,9 @@ def process_user_message(user_id: str, unified_text: str) -> str:
     context_data = {
         "vin_info": vin_info,
         "parts_found": parts_found,
-        "session_summary": f"User ID: {user_id}. Stored VIN: {current_vin}"
+        "missing_pns": missing_pns, 
+        "session_summary": f"User ID: {user_id}. Stored VIN: {current_vin}",
+        "extracted_entities": extracted
     }
 
     # --- STEP 4: INTENT ROUTING ---

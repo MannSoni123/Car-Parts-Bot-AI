@@ -5,7 +5,7 @@ from app.redis_client import redis_client
 
 # ================= CONFIG =================
 
-SESSION_TTL = 1800  # 30 minutes
+SESSION_TTL = 900  # 15 minutes
 SESSION_KEY_PREFIX = "chat:session:"
 
 # ================= HELPERS =================

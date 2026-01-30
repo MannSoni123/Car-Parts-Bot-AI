@@ -165,6 +165,56 @@ class GPTService:
             # print(f"   🚨 [SuperIntent] Strict Instructions Triggered: {len(strict_instructions)} rules.")
             # print(f"   🚨 Rules: {strict_instructions}")
             final_system_message += "\n\n" + "\n".join(strict_instructions)
+
+        # --- PART NUMBER SPECIFIC FORMATTING ---
+        # User Rule: if user provide part number then in reply it also include part number as per item in reply
+        # means: brand, price, part number, availability. Only if user only provide part number.
+        extracted = context_data.get("extracted_entities", {})
+        user_pns = extracted.get("part_numbers", [])
+        user_descs = extracted.get("item_descriptions", [])
+        
+        # Condition: Has Part Numbers AND (No Descriptions OR Very few descriptions compared to PNs)
+        # We'll use a simple heuristic: If PNs exist, we want this strict table format for clarity.
+        if user_pns:
+            missing_pns = context_data.get("missing_pns", [])
+            print(f"   🔢 [SuperIntent] User provided Part Numbers. Enforcing EXTENDED FORMAT. Found: {len(parts)}, Missing: {len(missing_pns)}")
+            
+            # CASE A: Some parts found
+            if len(parts) > 0:
+                 format_instruction = f"""
+                 CRITICAL: The user searched by PART NUMBER. 
+                 1. You MUST start the response with: "Thank you for providing the part number . Here are the available options for this part:"
+                 2. You MUST format the output for found parts EXACTLY as follows for each item (Use a Numbered List):
+                 
+                 [Number]. *[Part Name]*
+                    - Brand: [Insert Actual Brand Name]
+                    - Price: [Insert Actual Price]
+                    - Part Number: [Insert Actual Part Number]
+                    - Availability: [Insert In Stock / Out of Stock]
+                 
+                 IMPORTANT: Replace the terms in brackets [] with the REAL data from the found parts context. Do NOT use the text "Brand Name" or "Price" literally.
+                 MANDATORY: You MUST include the 'Part Number' line for EVERY item.
+                 Do not summarize. Show this block for EVERY matching part found.
+                 """
+                 
+                 if missing_pns:
+                     format_instruction += f"\n\n3. FOR MISSING PARTS: The following part numbers were NOT found in the database: {', '.join(missing_pns)}.\n   You MUST add this exact line for each missing part:\n   'For part number [Missing Part Number], our team will contact you soon.'"
+
+                 final_system_message += "\n\n" + format_instruction
+            
+            # CASE B: NO parts found at all
+            elif len(parts) == 0:
+                 format_instruction = f"""
+                 CRITICAL: The user searched by PART NUMBER, but NO MATCHING PARTS were found in the database.
+                 
+                 You MUST output the following message explicitly:
+                 "Thank you for providing the part number .
+                 
+                 For part number {', '.join(missing_pns)}, our team will contact you soon."
+                 
+                 Do NOT add any other table or placeholders. Just the above acknowledgement.
+                 """
+                 final_system_message += "\n\n" + format_instruction
         
         print(f"   📦 [SuperIntent] Parts Context: {len(parts)} items passed to GPT.")
 
@@ -220,7 +270,9 @@ class GPTService:
         Your job is to transcribe ALL text visible in the image.
         
         PRIORITY targets:
-        1. Vehicle Identification Numbers (VIN) - 17 chars. Remove spaces.
+        1. Vehicle Identification Numbers (VIN) - Must be EXACTLY 17 characters.
+           - Look carefully for I/1, O/0/Q confusion.
+           - If you see 16 chars, look extremely closely for the missing one. A 16-digit VIN is usually invalid.
         2. Part Numbers / OEM Codes.
         3. Part Descriptions.
         
@@ -325,9 +377,10 @@ class GPTService:
         RULES:
         - Include slang (e.g. "boot", "rims", "rubber").
         - Include generic terms (e.g. "lights", "glass", "filter").
-        - **EXCLUDE** the word "part" or "parts" itself. Only extracting specific component names.
+        - **EXCLUDE** the word "part", "parts", "chassis", "vin", "regn", "no" or numbers. Only extracting specific component names.
         - IGNORE matching it to a database. Just extract what the user said.
         - IGNORE vehicle models ("BMW", "318i") or years ("2012").
+        - IGNORE identifiers like "VIN", "Chassis Number".
         - Output JSON list.
         
         EXAMPLE: 
@@ -366,8 +419,10 @@ class GPTService:
         You are an Entity Extractor API. 
         
         EXTRACT THESE ENTITIES:
-        1. "vin_list": List of 17-character VINs (alphanumeric, exclude I,O,Q check if possible).
-           - PRIORITY: Capture any 17-char VIN immediately.
+        1. "vin_list": List of 17-character VINs (alphanumeric).
+           - PRIORITY: Capture any 17-char VIN.
+           - If a sequence is 16 chars but looks like a VIN, try to find the adjacent missing char (or remove a stray space).
+           - Do not invent characters. Only fix obvious splits.
 
         2. "part_numbers": List of part numbers or OEM codes. 
            - Capture alphanumeric sequences (min 3 chars).

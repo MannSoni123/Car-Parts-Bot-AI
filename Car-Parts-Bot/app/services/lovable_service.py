@@ -10,7 +10,7 @@ class LovableService:
         Returns a dict matching the IntentPrompt structure, or None if it fails.
         """
         cache_key = f"lovable_prompt:{intent_key}"
-        
+
         try:
             cached = redis_client.get(cache_key)
             if cached:
@@ -19,7 +19,7 @@ class LovableService:
         except Exception as e:
             current_app.logger.warning(f"Redis cache read failed: {e}")
 
-        base_url = current_app.config.get("LOVABLE_API_BASE_URL", "https://car-parts-uae.lovable.app")
+        base_url = current_app.config.get("LOVABLE_API_BASE_URL", "https://carpartsai.ae")
         api_key = current_app.config.get("CHATBOT_API_KEY", "")
 
         url = f"{base_url}/api/public/prompts/{intent_key}"
@@ -55,7 +55,7 @@ class LovableService:
         """
         Posts search analytics events to the Lovable API.
         """
-        base_url = current_app.config.get("LOVABLE_API_BASE_URL", "https://car-parts-uae.lovable.app")
+        base_url = current_app.config.get("LOVABLE_API_BASE_URL", "https://carpartsai.ae")
         api_key = current_app.config.get("CHATBOT_API_KEY", "")
 
         url = f"{base_url}/api/public/analytics/events"
@@ -76,7 +76,7 @@ class LovableService:
         """
         Posts chat conversational history to the Lovable API.
         """
-        base_url = current_app.config.get("LOVABLE_API_BASE_URL", "https://car-parts-uae.lovable.app")
+        base_url = current_app.config.get("LOVABLE_API_BASE_URL", "https://carpartsai.ae")
         api_key = current_app.config.get("CHATBOT_API_KEY", "")
 
         url = f"{base_url}/api/public/chat-logs"

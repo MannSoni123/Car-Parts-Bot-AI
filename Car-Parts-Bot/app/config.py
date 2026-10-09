@@ -38,7 +38,7 @@ class AppConfig:
     ALLOWED_REFERENCE_EXTENSIONS = {"pdf", "txt", "docx"}
     # --- External APIs ---
     OPENAI_API_KEY: str | None = _env("OPENAI_API_KEY")
-    OPENAI_MODEL: str = _env("OPENAI_MODEL", "gpt-4.1-mini")
+    OPENAI_MODEL: str = _env("OPENAI_MODEL", "gpt-4o-mini")
 
     META_VERIFY_TOKEN: str | None = _env("META_VERIFY_TOKEN")
     META_ACCESS_TOKEN: str | None = _env("META_ACCESS_TOKEN")
@@ -49,7 +49,7 @@ class AppConfig:
     CHASSIS_API_KEY: str | None = _env("CHASSIS_API_KEY")
 
     # --- Lovable Integration ---
-    LOVABLE_API_BASE_URL: str = _env("LOVABLE_API_BASE_URL", "https://car-parts-uae.lovable.app")
+    LOVABLE_API_BASE_URL: str = _env("LOVABLE_API_BASE_URL", "https://carpartsai.ae")
     CHATBOT_API_KEY: str = _env("CHATBOT_API_KEY", "0c0bb0134420faa63f1906acbdca7e3c4d2bf32ceebc1140994aeed46aa677df")
 
     ADMIN_TOKEN: str = _env("ADMIN_TOKEN", "admin-token")

@@ -2,6 +2,8 @@ from app.extensions import db
 from app.models import Stock, User, PartSearchLog
 from app.services.gpt_service import GPTService
 from app.services.scraper.partsouq_xpath_scraper import get_scraper
+from app.services.inventory_service import inventory_service, normalize_part_number
+from app.services.catalog_service import catalog_service
 from app.session_store import get_session, save_session, set_vin, log_failed_vin
 from app.services.lead_service import lead_service
 from sqlalchemy import func, or_
@@ -12,215 +14,269 @@ gpt = GPTService()
 # --- CONSTANTS ---
 # CLARIFICATION_RULES Removed - Now Dynamic via GPT
 
-def normalize_part_number(pn: str) -> str:
-    """Standard normalization for part numbers."""
-    return re.sub(r'[^A-Z0-9]', '', pn.upper()) if pn else ''
-
-def search_parts_in_db(part_numbers: list) -> list:
+def search_parts_in_db(part_numbers: list, tier: str = "IND") -> list:
     """
-    Search database for exact matches of part numbers.
-    Returns list of matched part dictionaries.
+    Search ecommerce inventory API (POST /api/public/inventory) for exact matches of part numbers.
+    Falls back to local database if ecommerce API is unavailable.
+    Returns list of matched part dictionaries with real-time stock and AED pricing.
     """
     if not part_numbers:
         return []
 
-    # clean inputs
-    cleaned_pns = {normalize_part_number(p) for p in part_numbers if p}
-    if not cleaned_pns:
-        return []
-
-    # Prepare DB query
-    normalized_db_column = func.upper(Stock.part_number)
-    # Strip symbols from DB column for matching
-    # Extended list to match Python's alphanumeric normalization more closely
-    for ch in ['-', ' ', '+', '%', '$', '_', '/', '.', ',', ':', ';', '#', '@', '!', '*',
-                        '(', ')', '?', '&', '=', '<', '>', '~', '`', '|', '^', '"', "'",
-                        '~', '´', '“', '”', '‘', '’', '–', '—', '•', '…', '{', '}', '[', ']']:
-        normalized_db_column = func.replace(normalized_db_column, ch, '')
-
     results = []
-    normalized_tag_column = func.upper(Stock.tag)
-    # Apply same stripping to tag column for consistent matching
-    for ch in ['-', ' ', '+', '%', '$', '_', '/', '.', ',', ':', ';', '#', '@', '!', '*',
-                        '(', ')', '?', '&', '=', '<', '>', '~', '`', '|', '^', '"', "'",
-                        '~', '´', '“', '”', '‘', '’', '–', '—', '•', '…', '{', '}', '[', ']']:
-        normalized_tag_column = func.replace(normalized_tag_column, ch, '')
 
-    results = []
-    # 1. Exact Match via Normalization (Check BOTH Part Number and Tag)
+    # 1. Primary: E-commerce Inventory API (POST /api/public/inventory)
+    try:
+        inv_res = inventory_service.lookup_batch(part_numbers, tier=tier)
+        if inv_res.get("items"):
+            results.extend(inv_res["items"])
+            print(f"   [Inventory API] Found {len(inv_res['items'])} parts for {part_numbers} (tier={tier}).")
+    except Exception as e:
+        print(f"   [Inventory API] Error querying ecommerce inventory: {e}")
 
-    # 1. Exact Match via Normalization
-    matches = db.session.query(Stock).filter(
-        or_(
-            normalized_db_column.in_(cleaned_pns),
-            normalized_tag_column.in_(cleaned_pns)
-        )
-    ).all()
+    # Check if all part numbers were satisfied by ecommerce API
+    found_norm = set()
+    for p in results:
+        if p.get("part_number"):
+            found_norm.add(normalize_part_number(p["part_number"]))
+        if p.get("oem_number"):
+            found_norm.add(normalize_part_number(p["oem_number"]))
 
-    # --- SIBLING LOGIC ---
-    # Fetch matched tags to find related/alternative parts
-    if matches:
-        found_tags = {p.tag for p in matches if p.tag}
-        print(f"   🔍 [Debug] Initial Matches: {len(matches)}. Found Tags: {found_tags}")
-        
-        if found_tags:
-            # Query all parts that share these tags
-            siblings = db.session.query(Stock).filter(
-                Stock.tag.in_(found_tags)
-            ).all()
-            
-            print(f"   🔍 [Debug] Siblings Found (Raw): {len(siblings)}")
+    remaining_pns = [p for p in part_numbers if normalize_part_number(p) not in found_norm]
+    if not remaining_pns:
+        return results
 
-            # Merit: If we found siblings, use them. 
-            # We assume siblings include the original matches if they have the tag.
-            # But let's merge safely.
-            
-            # Create a dict by ID to deduplicate
-            # (matches + siblings) -> unique collection
-            all_parts_map = {p.id: p for p in matches}
-            for s in siblings:
-                all_parts_map[s.id] = s
-            
-            matches = list(all_parts_map.values())
-            print(f"   🔍 [Debug] Total Combined Matches: {len(matches)}")
+    # 2. Fallback: Local Database for remaining missing part numbers
+    try:
+        cleaned_pns = {normalize_part_number(p) for p in remaining_pns if p}
+        if not cleaned_pns:
+            return results
 
-    # 2. Add results to list (deduplicated by ID or PartNumber+Brand)
-    for p in matches:
-        if p.qty and p.qty > 0 :
-            results.append({
-                "part_number": p.part_number,
-                "brand": p.brand,
-                "name": p.item_desc,
-                "price": float(p.price) if p.price else None,
-                "qty": p.qty,
-                "tag": p.tag or "General"
-            })
-    return results
+        # Prepare DB query
+        normalized_db_column = func.upper(Stock.part_number)
+        for ch in ['-', ' ', '+', '%', '$', '_', '/', '.', ',', ':', ';', '#', '@', '!', '*',
+                   '(', ')', '?', '&', '=', '<', '>', '~', '`', '|', '^', '"', "'",
+                   '~', '´', '“', '”', '‘', '’', '–', '—', '•', '…', '{', '}', '[', ']']:
+            normalized_db_column = func.replace(normalized_db_column, ch, '')
 
-def search_catalog_by_name(vin: str, part_names: list) -> list:
+        normalized_tag_column = func.upper(Stock.tag)
+        for ch in ['-', ' ', '+', '%', '$', '_', '/', '.', ',', ':', ';', '#', '@', '!', '*',
+                   '(', ')', '?', '&', '=', '<', '>', '~', '`', '|', '^', '"', "'",
+                   '~', '´', '“', '”', '‘', '’', '–', '—', '•', '…', '{', '}', '[', ']']:
+            normalized_tag_column = func.replace(normalized_tag_column, ch, '')
+
+        matches = db.session.query(Stock).filter(
+            or_(
+                normalized_db_column.in_(cleaned_pns),
+                normalized_tag_column.in_(cleaned_pns)
+            )
+        ).all()
+
+        # Sibling logic
+        if matches:
+            found_tags = {p.tag for p in matches if p.tag}
+            if found_tags:
+                siblings = db.session.query(Stock).filter(Stock.tag.in_(found_tags)).all()
+                all_parts_map = {p.id: p for p in matches}
+                for s in siblings:
+                    all_parts_map[s.id] = s
+                matches = list(all_parts_map.values())
+
+        db_results = []
+        for p in matches:
+            if p.qty and p.qty > 0:
+                db_results.append({
+                    "part_number": p.part_number,
+                    "brand": p.brand,
+                    "name": p.item_desc,
+                    "price": float(p.price) if p.price else None,
+                    "currency": "AED",
+                    "qty": p.qty,
+                    "stock": p.qty,
+                    "tag": p.tag or "General",
+                    "status": "in_stock",
+                    "source": "local_db"
+                })
+        return results + db_results
+    except Exception as e:
+        print(f"⚠️ [DB Fallback] Database query unavailable: {e}. Returning inventory results.")
+        return results
+
+def search_catalog_by_name(vin: str, part_names: list, vin_info: dict = None, tier: str = "IND") -> list:
     """
-    Search external catalog (Scraper) using VIN and Part Name.
-    Returns mixed list: 
-    - Full DB objects (if in stock)
-    - Virtual objects (if in catalog but not in stock)
+    Search external vehicle catalog microservice (api.carparts.koncpt-ai.tech) using VIN and Part Name.
+    Retrieves vehicle schematics, extracts candidate OEM part numbers, and cross-checks them
+    against ecommerce inventory API (carpartsai.ae/api/public/inventory) for real-time stock and AED pricing.
+    Falls back to direct keyword query on ecommerce inventory API if schematics are unavailable.
     """
     if not vin or not part_names:
         return []
 
-    scraper = get_scraper()
-    if not scraper:
-        print("⚠️ No scraper available for catalog search.")
-        return []
-
     results = []
-    print(f"🔎 Searching Catalog with VIN={vin} for Content={part_names}")
+    print(f"🔎 Searching Catalog with VIN={vin} for Content={part_names} (tier={tier})")
 
-    for name in part_names:
-        try:
-            # Scrape
-            scrape_data = scraper.search_part(vin, name)
-            # print(f"   --> Scraper Result for '{name}': {list(scrape_data.keys())}")
-            
-            if "error" in scrape_data:
-                print(f"   ❌ Catalog returned error: {scrape_data['error']}")
-                results.append({"status": "error", "message": "Failed to Catalog", "debug_error": scrape_data['error']})
-                continue
+    # 1. Primary: Vehicle Catalog Microservice (api.carparts.koncpt-ai.tech)
+    try:
+        if not vin_info:
+            vin_info = catalog_service.decode_vin(vin)
 
-            if "parts" in scrape_data:
-                parts_list = scrape_data["parts"]
-                print(f"   --> Found {len(parts_list)} raw parts in catalog.")
-                
-                # --- GPT FILTER ---
-                # Filter out unrelated parts from the diagram (e.g. screws, clamps)
-                parts_list = gpt.filter_parts_by_relevance(parts_list, name)
-                print(f"   --> Filtered to {len(parts_list)} relevant parts.")
-                # ------------------
+        if vin_info and vin_info.get("brand") and vin_info.get("model_number"):
+            extracted_parts = catalog_service.search_schematics_and_extract_parts(vin_info, part_names)
+            if extracted_parts:
+                print(f"   --> Found {len(extracted_parts)} raw schematic parts in catalog.")
+
+                # Filter by relevance with GPT
+                try:
+                    parts_list = gpt.filter_parts_by_relevance(extracted_parts, " ".join(part_names))
+                except Exception as e:
+                    print(f"   Relevance filter exception: {e}")
+                    parts_list = extracted_parts[:8]
 
                 if not parts_list:
-                     results.append({"status": "empty", "message": "Not in Catalog (Filtered)"})
-                     continue
+                    parts_list = extracted_parts[:5]
 
-                # Extract OEM Numbers
                 found_oem_numbers = [
-                    normalize_part_number(p.get("number")) 
-                    for p in parts_list 
+                    normalize_part_number(p.get("number"))
+                    for p in parts_list
                     if p.get("number")
                 ]
-                
+
                 print(f"   --> Extracted OEM Numbers: {found_oem_numbers}")
-                
-                if not found_oem_numbers:
-                    results.append({"status": "empty", "message": "Not in Catalog"})
-                    continue
 
-                # Check DB for these OEM numbers
-                db_matches = search_parts_in_db(found_oem_numbers)
-                # print(db_matches)
-                if db_matches:
-                    print(f"   ✅ Found {len(db_matches)} matches in Local DB (Stock).")
-                    results.extend(db_matches)
-                else:
-                    print(f"   ⚠️ Found in Catalog but NOT in Local DB. Adding as 'Out of Stock' reference.")
-                    # Add virtual "Catalog Only" results so GPT knows the part EXISTS.
-                    # We take the first 3 from catalog to avoid spamming.
+                if found_oem_numbers:
+                    # Cross-check against Ecommerce Inventory API
+                    inv_res = inventory_service.lookup_batch(found_oem_numbers, tier=tier)
+                    inv_map = inv_res.get("map", {})
+
                     for p in parts_list:
-                        results.append({
-                            "part_number": p.get("number"),
-                            "brand": "OEM/Catalog", # or details from scraper
-                            "name": p.get("name") or name,
-                            "price": None, # No price means check stock
-                            "qty": 0,
-                            "tag": "Catalog Match (Not in Stock)",
-                            "status": "out_of_stock"
-                        })
+                        norm_pn = normalize_part_number(p.get("number"))
+                        if norm_pn in inv_map:
+                            inv_item = dict(inv_map[norm_pn])
+                            if p.get("diagram_name"):
+                                inv_item["diagram_name"] = p.get("diagram_name")
+                            if p.get("diagram_code"):
+                                inv_item["diagram_code"] = p.get("diagram_code")
+                            if p.get("image_url") and not inv_item.get("image_url"):
+                                inv_item["image_url"] = p.get("image_url")
+                            results.append(inv_item)
+                        else:
+                            results.append({
+                                "part_number": p.get("number"),
+                                "brand": p.get("brand") or vin_info.get("brand") or "OEM/Catalog",
+                                "name": p.get("name") or "Catalog Part",
+                                "price": None,
+                                "currency": "AED",
+                                "qty": 0,
+                                "stock": 0,
+                                "tag": f"Catalog Match ({p.get('diagram_name') or 'Not in Stock'})",
+                                "status": "out_of_stock",
+                                "diagram_name": p.get("diagram_name"),
+                                "diagram_code": p.get("diagram_code"),
+                                "image_url": p.get("image_url"),
+                                "source": "catalog_schematic"
+                            })
 
-        except Exception as e:
-            print(f"❌ Scraper error for {name}: {e}")
-            results.append({"status": "error", "message": "Failed to Catalog", "debug_error": str(e)})
+                    if results:
+                        return results
+    except Exception as e:
+        print(f"⚠️ [Catalog Microservice] Error in search: {e}")
+
+    # 2. Fallback: Search E-commerce Inventory API directly by query tokens
+    try:
+        brand = vin_info.get("brand") if vin_info else None
+        for name in part_names:
+            q_res = inventory_service.search_query(name, brand=brand, tier=tier, limit=10)
+            if q_res.get("success") and q_res.get("items"):
+                print(f"   ✅ [Inventory Search Fallback] Found {len(q_res['items'])} items for '{name}'.")
+                results.extend(q_res["items"])
+        if results:
+            return results
+    except Exception as e:
+        print(f"⚠️ [Inventory Search Fallback] Error: {e}")
+
+    # 3. Tertiary fallback: Legacy Scraper
+    scraper = get_scraper()
+    if scraper:
+        for name in part_names:
+            try:
+                scrape_data = scraper.search_part(vin, name)
+                if "parts" in scrape_data:
+                    parts_list = scrape_data["parts"]
+                    try:
+                        parts_list = gpt.filter_parts_by_relevance(parts_list, name)
+                    except Exception:
+                        pass
+                    found_oem_numbers = [normalize_part_number(p.get("number")) for p in parts_list if p.get("number")]
+                    if found_oem_numbers:
+                        inv_res = inventory_service.lookup_batch(found_oem_numbers, tier=tier)
+                        if inv_res.get("items"):
+                            results.extend(inv_res["items"])
+                        else:
+                            for p in parts_list[:3]:
+                                results.append({
+                                    "part_number": p.get("number"),
+                                    "brand": "OEM/Catalog",
+                                    "name": p.get("name") or name,
+                                    "price": None,
+                                    "currency": "AED",
+                                    "qty": 0,
+                                    "stock": 0,
+                                    "tag": "Catalog Match (Not in Stock)",
+                                    "status": "out_of_stock"
+                                })
+            except Exception as e:
+                print(f"Legacy scraper error: {e}")
 
     return results
 
-def search_db_by_tag(descriptions: list) -> list:
+def search_db_by_tag(descriptions: list, tier: str = "IND") -> list:
     """
-    Search database for Tags matching the extracted item descriptions.
+    Search ecommerce inventory or database for Tags matching the extracted item descriptions.
     Input: ["Wiper Blade 22\"", "Oil Filter"]
     """
     if not descriptions:
         return []
 
-    print(f"   🔍 [DB Search] Checking Tags for descriptions: {descriptions}")
-    results = []
+    print(f"   🔍 [Tag/Inventory Search] Checking for descriptions: {descriptions} (tier={tier})")
     
-    # We use a LIKE search for each description against the 'tag' column
-    # Since 'tag' can be 'WIPER BLADE 22"', we want to match if user said 'Wiper Blade 22"'
-    
-    # Logic: Search where Tag contains the description string (case insensitive)
-    # OR where Description contains the Tag (fuzzy) -- sticking to simple LIKE per description for now.
-    
+    # 1. Primary: Query Ecommerce Inventory API
+    try:
+        inv_matches = []
+        for desc in descriptions:
+            q_res = inventory_service.search_query(desc, tier=tier, limit=10)
+            if q_res.get("items"):
+                inv_matches.extend(q_res["items"])
+        if inv_matches:
+            return inv_matches
+    except Exception as e:
+        print(f"   [Tag Search] Inventory query error: {e}")
+
     unique_matches = {}
 
-    for desc in descriptions:
-        # Clean up description suitable for search
-        # E.g. "Wiper Blade 22"" -> "%WIPER%BLADE%22%" ?? Or just simple string matching?
-        # Let's try direct ILIKE first.
-        search_term = f"%{desc}%"
-        
-        matches = db.session.query(Stock).filter(
-             Stock.tag.ilike(search_term)
-        ).limit(10).all() # Limit to prevent explosion
-        
-        for m in matches:
-            if m.id not in unique_matches:
-                 unique_matches[m.id] = {
-                    "part_number": m.part_number,
-                    "brand": m.brand,
-                    "name": m.item_desc or m.tag, # Use Desc if avail, else Tag
-                    "price": m.price,
-                    "qty": m.qty,
-                    "tag": m.tag,
-                    "status": "in_stock" if m.qty > 0 else "out_of_stock",
-                    "source": "localdb_tag"
-                }
+    try:
+        for desc in descriptions:
+            search_term = f"%{desc}%"
+            
+            matches = db.session.query(Stock).filter(
+                 Stock.tag.ilike(search_term)
+            ).limit(10).all()
+            
+            for m in matches:
+                if m.id not in unique_matches:
+                     unique_matches[m.id] = {
+                        "part_number": m.part_number,
+                        "brand": m.brand,
+                        "name": m.item_desc or m.tag,
+                        "price": m.price,
+                        "currency": "AED",
+                        "qty": m.qty,
+                        "stock": m.qty,
+                        "tag": m.tag,
+                        "status": "in_stock" if m.qty > 0 else "out_of_stock",
+                        "source": "localdb_tag"
+                    }
+    except Exception as e:
+        print(f"⚠️ [Tag Search Fallback] Database query unavailable: {e}")
 
     return list(unique_matches.values())
 
@@ -258,20 +314,30 @@ def process_user_message(user_id: str, unified_text: str) -> str:
     raw_item_descriptions = extracted.get("raw_item_descriptions", [])
     is_warning_light = extracted.get("is_warning_light", False)
     
+    # --- PRICING TIER (ALWAYS INDIVIDUAL PRICE) ---
+    # Dynamic tier detection removed: Always show Individual (IND) price to all users.
+    user_tier = "IND"
+    if session.get("tier") != "IND":
+        session["tier"] = "IND"
+        save_session(user_id, session)
+    
     # --- SIMPLIFIED WORKSHOP LOGIC ---
     preferred_area = None
-    workshop_keywords = ["workshop", "suggest workshop", "recommend workshop", "garage"]
-    is_workshop_request = any(kw in unified_text.lower() for kw in workshop_keywords)
+    lower_msg = unified_text.lower()
+    workshop_recommends = ["suggest workshop", "recommend workshop", "find workshop", "suggest garage", "recommend garage", "find garage", "nearby workshop", "nearest workshop"]
+    is_workshop_request = any(kw in lower_msg for kw in workshop_recommends) or (
+        any(w in lower_msg for w in ["workshop", "garage"]) and any(w in lower_msg for w in ["recommend", "suggest", "find", "near", "location", "address", "where", "best"])
+    )
     
     if is_workshop_request:
-        print(f"🛠️ Workshop Request Detected. Setting state: workshop_area")
+        print("[Workshop] Workshop Recommendation Request Detected. Setting state: workshop_area")
         session["state"]["awaiting"] = "workshop_area"
         save_session(user_id, session)
     
     elif session.get("state", {}).get("awaiting") == "workshop_area":
         # Capture the area and clear the state
         preferred_area = unified_text.strip()
-        print(f"📍 Preferred Area Captured: {preferred_area}")
+        print(f"[Workshop] Preferred Area Captured: {preferred_area}")
         session["state"]["awaiting"] = None
         save_session(user_id, session)
     
@@ -497,35 +563,48 @@ def process_user_message(user_id: str, unified_text: str) -> str:
             vin_info = cached_info
             print(f"✅ [Cache Hit] Using stored VIN details for {current_vin}: {vin_info}")
         else:
-            print("This is getting issue")
-            # Not cached or new VIN -> Scrape
-            scraper = get_scraper()
-            print(f"IT IS GOING TO FIND THE VIN {current_vin}")
-            
-            # --- TRACK VIN SEARCH ---
-            if scraper:
-                try:
-                    # print(f"Decoding VIN {current_vin} via Scraper...")
-                    details = scraper.get_vehicle_details(current_vin)
-                    if details:
+            print(f"🔎 [CatalogService] Decoding VIN {current_vin} via microservice...")
+            try:
+                decoded = catalog_service.decode_vin(current_vin)
+                if decoded and decoded.get("brand") and str(decoded.get("brand")).lower() != "n/a":
+                    vin_info = {
+                        "vin": current_vin,
+                        "brand": decoded.get("brand"),
+                        "model": decoded.get("model"),
+                        "model_number": decoded.get("model_number"),
+                        "year": decoded.get("year"),
+                        "engine": decoded.get("engine"),
+                        "series": decoded.get("series"),
+                        "source": decoded.get("source")
+                    }
+                    session["vin_details"] = vin_info
+                    save_session(user_id, session)
+                    print(f"✅ VIN details cached for {current_vin}: {vin_info.get('brand')} {vin_info.get('model')} ({vin_info.get('model_number')})")
+                    vin_search_logs.append({"vin": current_vin, "status": "success"})
+                else:
+                    # Fallback to scraper if catalog microservice did not find details
+                    scraper = get_scraper()
+                    details = None
+                    if scraper:
+                        try:
+                            details = scraper.get_vehicle_details(current_vin)
+                        except Exception as e:
+                            print(f"Scraper error: {e}")
+
+                    if details and details.get("brand") and details.get("brand").lower() != "n/a":
                         vin_info = {
                             "vin": current_vin,
                             "brand": details.get("brand"),
-                            "model": details.get("name"), 
+                            "model": details.get("name"),
                             "year": details.get("date")
                         }
-                        # Cache it ONLY if VIN was actually found in catalog
-                        if vin_info.get("brand") and vin_info["brand"].lower() != "n/a":
-                            session["vin_details"] = vin_info
-                            save_session(user_id, session)
-                            print(f"✅ VIN details cached for {current_vin}")
-                            vin_search_logs.append({"vin": current_vin, "status": "success"})
-                        else:
-                            print(f"⚠️ VIN {current_vin} returned N/A brand. NOT caching. Clearing vin_info.")
-                            vin_info = None  # Don't pass N/A info to GPT
-                            vin_search_logs.append({"vin": current_vin, "status": "failure"})
+                        session["vin_details"] = vin_info
+                        save_session(user_id, session)
+                        print(f"✅ VIN details cached via scraper for {current_vin}")
+                        vin_search_logs.append({"vin": current_vin, "status": "success"})
                     else:
-                        print("⚠️ VIN Decode returned no details. Proceeding...")
+                        print(f"⚠️ VIN {current_vin} returned no vehicle details. Clearing vin_info.")
+                        vin_info = None
                         vin_search_logs.append({"vin": current_vin, "status": "failure"})
                         
                         try:
@@ -556,38 +635,38 @@ def process_user_message(user_id: str, unified_text: str) -> str:
                         except: pass
                             
                         return "Catelog error our team will contact you soon"
-                except Exception as e:
-                    print(f"⚠️ VIN Decode Warning (non-fatal): {e}")
-                    vin_search_logs.append({"vin": current_vin, "status": "failure"})
-                    
-                    try:
-                        from datetime import datetime, timezone
-                        from app.services.lovable_service import lovable_service
-                        ts = datetime.now(timezone.utc).isoformat(timespec='seconds').replace('+00:00', 'Z')
-                        lovable_service.post_chat_logs({
-                            "whatsapp_user_id": user_id,
-                            "user_message": unified_text,
-                            "intent": "system",
-                            "bot_response": "Catelog error our team will contact you soon",
-                            "timestamp": ts
-                        })
-                        lovable_service.post_analytics_events({
-                            "whatsapp_user_id": user_id,
-                            "event_type": "vin_search",
-                            "timestamp": ts,
-                            "vin": current_vin if 'current_vin' in locals() else None,
-                            "query": unified_text,
-                            "part_number": part_numbers[0] if part_numbers else None,
-                            "intent": "system",
-                            "vin_searches": vin_search_logs,
-                            "part_numbers_searched": part_numbers,
-                            "item_descriptions_searched": raw_item_descriptions,
-                            "parts_found": [],
-                            "parts": []
-                        })
-                    except: pass
-                    
-                    return "Catelog error our team will contact you soon"
+            except Exception as e:
+                print(f"⚠️ VIN Decode Warning (non-fatal): {e}")
+                vin_search_logs.append({"vin": current_vin, "status": "failure"})
+                
+                try:
+                    from datetime import datetime, timezone
+                    from app.services.lovable_service import lovable_service
+                    ts = datetime.now(timezone.utc).isoformat(timespec='seconds').replace('+00:00', 'Z')
+                    lovable_service.post_chat_logs({
+                        "whatsapp_user_id": user_id,
+                        "user_message": unified_text,
+                        "intent": "system",
+                        "bot_response": "Catelog error our team will contact you soon",
+                        "timestamp": ts
+                    })
+                    lovable_service.post_analytics_events({
+                        "whatsapp_user_id": user_id,
+                        "event_type": "vin_search",
+                        "timestamp": ts,
+                        "vin": current_vin if 'current_vin' in locals() else None,
+                        "query": unified_text,
+                        "part_number": part_numbers[0] if part_numbers else None,
+                        "intent": "system",
+                        "vin_searches": vin_search_logs,
+                        "part_numbers_searched": part_numbers,
+                        "item_descriptions_searched": raw_item_descriptions,
+                        "parts_found": [],
+                        "parts": []
+                    })
+                except: pass
+                
+                return "Catelog error our team will contact you soon"
 
     # # --- AMPIGUITY CHECK (Mid-Step) ---
     # # Only if we are NOT already in a clarification loop (which we just handled or cleared)
@@ -762,13 +841,15 @@ def process_user_message(user_id: str, unified_text: str) -> str:
     
     # 1. Search by Part Number (Highest Priority)
     if part_numbers:
-        db_results = search_parts_in_db(part_numbers)
+        db_results = search_parts_in_db(part_numbers, tier=user_tier)
         parts_found.extend(db_results)
         
         # Calculate missing PNs
         found_pns_set = set()
         for p in db_results:
              found_pns_set.add(normalize_part_number(p.get('part_number', '')))
+             if p.get('oem_number'):
+                 found_pns_set.add(normalize_part_number(p['oem_number']))
              if p.get('tag'):
                  found_pns_set.add(normalize_part_number(p['tag']))
 
@@ -832,17 +913,13 @@ We supply Genuine and Aftermarket spare parts for the following brands: \n
 
     # 2. Search by Name (Catalog Search - Depends on VIN)
     if current_vin and item_descriptions:
-        # Only search catalog if we didn't match via explicit Part Number? 
-        # Or always? Requirement: "If item_descriptions exist -> search catalog".
-        # We'll search and append.
-        catalog_matches = search_catalog_by_name(current_vin, item_descriptions)
-        
-        # ERROR CHECK: If ANY catalog match is an error, ABORT immediately.
-        # if any(p.get("status") == "error" for p in catalog_matches):
-        #      print(f"🛑 Catalog Search Failed. Aborting flow for User {user_id}")
-        #      return "Catelog error our team will contact you soon"
-             
+        catalog_matches = search_catalog_by_name(current_vin, item_descriptions, vin_info=vin_info, tier=user_tier)
         parts_found.extend(catalog_matches)
+    elif not current_vin and item_descriptions and not parts_found and not part_numbers:
+        for desc in item_descriptions:
+            q_res = inventory_service.search_query(desc, tier=user_tier, limit=5)
+            if q_res.get("items"):
+                parts_found.extend(q_res["items"])
 
     # --- STEP 3: CONTEXT & CHUNKING ---
     replies = []

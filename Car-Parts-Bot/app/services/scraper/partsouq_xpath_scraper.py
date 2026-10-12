@@ -383,7 +383,6 @@ class PartSouqXPathScraper:
     def get_vehicle_details(self, vin: str) -> Optional[Dict[str, str]]:
         search_url = f"{self.base_url}/en/search/all?q={vin}"
         tree = self._fetch_xpath(search_url)
-        
         if tree is None: 
             return None
 
@@ -396,7 +395,6 @@ class PartSouqXPathScraper:
             name  = _safe_text("//td[@data-title='Name']")
             model = _safe_text("//td[@data-title='Model']")
             date = _safe_text("//td[@data-title='Date'] | //td[@data-title='Vehicle Date'] | //td[@data-title='Manufactured']")
-
             return {
                 "brand": brand,
                 "name": name,

@@ -48,9 +48,14 @@ class AppConfig:
     CHASSIS_API_BASE_URL: str | None = _env("CHASSIS_API_BASE_URL")
     CHASSIS_API_KEY: str | None = _env("CHASSIS_API_KEY")
 
-    # --- Lovable Integration ---
+    # --- Vehicle Catalog Microservice ---
+    CATALOG_API_BASE_URL: str = _env("CATALOG_API_BASE_URL", "https://api.carparts.koncpt-ai.tech")
+
+    # --- E-commerce & Inventory Integration ---
+    ECOMMERCE_API_BASE_URL: str = _env("ECOMMERCE_API_BASE_URL") or _env("LOVABLE_API_BASE_URL", "https://carpartsai.ae")
     LOVABLE_API_BASE_URL: str = _env("LOVABLE_API_BASE_URL", "https://carpartsai.ae")
     CHATBOT_API_KEY: str = _env("CHATBOT_API_KEY", "0c0bb0134420faa63f1906acbdca7e3c4d2bf32ceebc1140994aeed46aa677df")
+    DEFAULT_PRICING_TIER: str = _env("DEFAULT_PRICING_TIER", "IND")
 
     ADMIN_TOKEN: str = _env("ADMIN_TOKEN", "admin-token")
 

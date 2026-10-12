@@ -346,7 +346,7 @@ class GPTService:
                  
                  [Number]. *[Part Name]*
                     - Brand: [Insert Actual Brand Name]
-                    - Price: [Insert Actual Price]
+                    - Price: [Insert Actual Price with AED currency, e.g. "AED 150" or "Call for Details" if unavailable]
                     - Part Number: [Insert Actual Part Number]
                     - Availability: [Insert In Stock / Out of Stock]
                     {' - Quantity: [Insert Quantity]' if is_vip else ''}
@@ -422,7 +422,7 @@ class GPTService:
                  
                  [Number]. *[Part Name]*
                     - Brand: [Insert Actual Brand Name]
-                    - Price: [Insert Actual Price]
+                    - Price: [Insert Actual Price with AED currency, e.g. "AED 150" or "Call for Details" if unavailable]
                     - Availability: [Insert In Stock / Out of Stock]
                  
                  3. STRICT RULE: Do NOT show the "Part Number" field. The user did not ask for it.

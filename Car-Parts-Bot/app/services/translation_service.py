@@ -1,6 +1,9 @@
 import os
 import re
-import fasttext
+try:
+    import fasttext
+except ImportError:
+    fasttext = None
 import urllib.request
 from deep_translator import GoogleTranslator
 

@@ -568,21 +568,21 @@ class GPTService:
         # 2. Run FAST GPT Check
         system_prompt = f"""
         You are an Auto Parts Technical Agent.
-        Your job is to checking if ANY parts in the User's List requires clarification based on the Rules.
+        Your job is to check if ANY parts in the User's List require clarification based on the Rules.
 
         RULES:
         {rules_text}
         
         INSTRUCTIONS:
-        1. Check EACH item in the User's List.
-        2. Valid options must be specific.
-        3. Extract the 'Question' and the 'Valid Options' (keywords the user might answer with) from the rule.
-        4. Return a LIST of all matching items.
-        4. Return a LIST of all matching items.
-        5. If no items match, return is_ambiguous=False.
-        6. CRITICAL: "target_item" MUST be the exact string from the INPUT list. Do not modify it or just use a substring.
-        7. CRITICAL: "valid_options" MUST be distinctive PHRASES (e.g. "with clutch", "without clutch") not single common words like "with" or "without".
-        8.⁠ ⁠CRITICAL RULE TO PREVENT REDUNDANT QUESTIONS: If the input item ALREADY contains one of the valid options or a clear positional specifier (like "front", "rear", "left", "right", "upper", "lower", etc.), DO NOT mark it as ambiguous. For example, if the input is "rear brake pad", do NOT ask "Front or Rear". Return ⁠ is_ambiguous=False ⁠ for that item.
+        1. Check EACH item in the User's List against the RULES.
+        2. If a part is ambiguous according to the rule:
+           - Formulate a clear, natural 'question' that presents the valid options from the rule (e.g. "Which type of filter do you need: Oil Filter, Engine Oil Filter, Air Filter, or AC Filter?", or "Do you need Front or Rear?").
+           - In 'valid_options', provide the list of specific option keywords/phrases from the rule (e.g. ["Oil Filter", "Engine Oil Filter", "Air Filter", "AC Filter"], or ["Front", "Rear"]).
+        3. "target_item" MUST be the exact string from the INPUT list. Do not modify it.
+        4. "valid_options" MUST be distinctive PHRASES (e.g. "with clutch", "without clutch", "front", "rear") not single common words like "with" or "without".
+        5. CRITICAL RULE TO PREVENT REDUNDANT QUESTIONS: If the input item ALREADY contains one of the valid options or a clear positional specifier (like "front", "rear", "left", "right", "upper", "lower", "inner", "outer", etc.) or specific filter type (like "air filter", "oil filter"), DO NOT mark it as ambiguous. Return is_ambiguous=False for that item.
+        6. If no items match or require clarification, return is_ambiguous=False.
+
         INPUT: List of part names.
         OUTPUT JSON:
         {{
@@ -590,10 +590,9 @@ class GPTService:
             "clarifications": [
                 {{
                     "target_item": "matched item name",
-                    "question": "The question to ask",
-                    "valid_options": ["keyword1", "keyword2"]
-                }},
-                ...
+                    "question": "The question to ask with options",
+                    "valid_options": ["option1", "option2"]
+                }}
             ]
         }}
         OR
@@ -610,7 +609,33 @@ class GPTService:
                 temperature=0.0,
                 response_format={"type": "json_object"}
             )
-            return json.loads(response.choices[0].message.content)
+            data = json.loads(response.choices[0].message.content)
+            if not data.get("is_ambiguous"):
+                return {"is_ambiguous": False}
+
+            # Post-check: filter out items that already specify an option or position
+            filtered = []
+            pos_keywords = {"front", "rear", "left", "right", "upper", "lower", "inner", "outer"}
+            for c in data.get("clarifications", []):
+                target = (c.get("target_item") or "").lower()
+                opts = [o.lower().strip() for o in c.get("valid_options", []) if o]
+                
+                # If target already explicitly contains any valid option (e.g. "air filter" contains "air filter")
+                if any(opt in target for opt in opts):
+                    continue
+                
+                # If clarification options are positional and target already has that position
+                if any(pos in target for pos in pos_keywords):
+                    opts_have_pos = any(any(pos in opt for pos in pos_keywords) for opt in opts)
+                    if opts_have_pos:
+                        continue
+
+                filtered.append(c)
+
+            if not filtered:
+                return {"is_ambiguous": False}
+
+            return {"is_ambiguous": True, "clarifications": filtered}
         except Exception as e:
             current_app.logger.error(f"Ambiguity check failed: {e}")
             return {"is_ambiguous": False}
@@ -618,8 +643,9 @@ class GPTService:
 
     def _normalize_part_names(self, raw_parts: List[str]) -> List[str]:
         """
-        Takes a list of raw part names (e.g. "boot", "fly wheel") and normalizes them
-        according to the 'parts_alias_text' defined in the Super Intent.
+        Takes a list of raw part names (e.g. "air cleaner element", "cabin filter", "bonnet") and normalizes
+        them to their CANONICAL part name according to the 'parts_alias_text' defined in the Super Intent.
+        Matches the live ecommerce website behavior (SellOnE): Always use the canonical name (first after ->).
         """
         print(f"   🔍 [DEBUG] _normalize_part_names called with: {raw_parts}")
         if not raw_parts:
@@ -640,33 +666,32 @@ class GPTService:
         if not normalization_rules:
             return raw_parts
 
-        # 2. Run FAST GPT Check
+        # 2. Run FAST GPT Check to map to CANONICAL part names
         system_prompt = f"""
-        You are a Part Name Normalizer.
+        You are a Part Name Normalizer for an automotive parts catalog.
         
         INPUT: List of part names.
-        OUTPUT: JSON object with key "normalized" containing the list.
+        OUTPUT: JSON object with key "normalized" containing the list of standardized canonical part names.
 
         TRANSFORMATION RULES:
         {normalization_rules}
         
         INSTRUCTIONS:
-        1. CHECK the rules for matches. A rule might look like "bonnet / hood" or "boot / trunk".
-        2. IF the input part matches exact full word in a rule (e.g. user says "bonnet", rule is "bonnet / hood"), REPLACE IT with the FULL rule string (e.g. "bonnet  hood").
-        3. Do NOT just pick one side. Return the combined string.
-        4. If no match, keep original.
-        5. Fix spelling (e.g. "shok" -> "shock").
-        6. Remove generic words like "price", "cost", "genuine".
-        7. CRITICAL: DO NOT assume positional or specific variations if the user didn't provide them. For example, if the user asks for "brake pad" (without specifying Front or Rear), DO NOT map it to a "Front Brake Pad" or "Rear Brake Pad" rule. Keep it as "brake pad". Only apply a rule if the user's text specifically matches the rule's specific condition (like 'rear' or 'front' or 'upper').
-
+        1. Check each part against the TRANSFORMATION RULES. In each rule line (`-> Canonical Name / Alias 1 / Alias 2 / ...`), the FIRST name after `->` is the CANONICAL name.
+        2. If the user's term matches an alias in a rule, replace it with the clean CANONICAL name (e.g. "air cleaner element" -> "Air Filter", "cabin filter" -> "A C Filter", "coolant pump" -> "Water Pump", "trunk strut" -> "Boot Shock").
+        3. If the input contains a specific position (like "front", "rear", "left", "right", "upper", "lower", "inner", "outer"), PRESERVE the position with the canonical name (e.g. "front brake pads" -> "Front Brake Pad", "rear brake disc" -> "Rear Brake Disc").
+        4. CRITICAL: If the user did NOT specify a position (e.g. just "brake pad"), DO NOT add "front" or "rear". Keep it as "Brake Pad".
+        5. Fix spelling errors (e.g. "shok" -> "shock").
+        6. Remove generic noise words like "price", "cost", "genuine", "original".
+        7. CRITICAL: Return ONLY the single clean canonical part name. DO NOT concatenate multiple aliases together into one string.
         
         EXAMPLE OUTPUT:
-        {{ "normalized": ["bonnet  hood", "oil filter"] }}
+        {{ "normalized": ["Air Filter", "A C Filter", "Water Pump", "Front Brake Pad", "Brake Pad"] }}
         """
 
         try:
             response = self.client.chat.completions.create(
-                model="gpt-4.1-mini", # Fast model is fine here
+                model="gpt-4.1-mini",
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": json.dumps(raw_parts)},
@@ -675,13 +700,49 @@ class GPTService:
                 response_format={"type": "json_object"}
             )
             data = json.loads(response.choices[0].message.content)
-            # Expecting {"parts": [...]} or just a list? 
-            # Let's force a structured output or just parse the list.
-            # actually better to ask for {"normalized": []}
-            return data.get("normalized", raw_parts)
+            normalized = data.get("normalized", raw_parts)
+            print(f"   ✅ [DEBUG] Normalized result: {normalized}")
+            return normalized
         except Exception as e:
             current_app.logger.error(f"Normalization failed: {e}")
             return raw_parts
+
+    def get_alias_synonyms(self, part_name: str) -> List[str]:
+        """
+        Retrieves alternative synonyms from the alias group for a given part name
+        from 'parts_alias_text' (fetched from carpartsai.ae).
+        Used when the canonical name returns no inventory results, matching the ecommerce
+        rule: 'If the canonical name search returns no results, retry with other names from the same alias group.'
+        """
+        if not part_name:
+            return []
+        try:
+            from app.services.lovable_service import lovable_service
+            prompt_data = lovable_service.get_prompt("system")
+            if not prompt_data or not prompt_data.get("parts_alias_text"):
+                return []
+            alias_text = prompt_data.get("parts_alias_text", "")
+            target_norm = part_name.lower().strip()
+            
+            # Remove positions to find base part group if needed
+            base_norm = re.sub(r'\b(front|rear|left|right|upper|lower|inner|outer)\b', '', target_norm).strip()
+            
+            for line in alias_text.splitlines():
+                line = line.strip()
+                if not line or not (line.startswith("->") or line.startswith("→")):
+                    continue
+                clean_line = line.lstrip("->").lstrip("→").strip()
+                synonyms = [p.strip() for p in clean_line.split("/") if p.strip()]
+                synonyms_lower = [s.lower() for s in synonyms]
+                
+                # Check if target or base matches any synonym in this group
+                if any(target_norm == s or base_norm == s or s in target_norm for s in synonyms_lower):
+                    # Return all other synonyms in this group
+                    return [s for s in synonyms if s.lower() != target_norm]
+            return []
+        except Exception as e:
+            current_app.logger.error(f"Error fetching alias synonyms for {part_name}: {e}")
+            return []
 
 
     def _extract_part_names_only(self, text: str) -> List[str]:

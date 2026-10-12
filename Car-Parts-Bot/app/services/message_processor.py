@@ -127,6 +127,32 @@ def search_catalog_by_name(vin: str, part_names: list, vin_info: dict = None, ti
                     if it_key and it_key not in seen_ids:
                         seen_ids.add(it_key)
                         results.append(it)
+            else:
+                # Retry with alternative synonyms from the live alias group (matching ecommerce rule)
+                synonyms = gpt.get_alias_synonyms(name)
+                for syn in synonyms[:3]:
+                    print(f"   --> Retrying with alias synonym: '{syn}' (brand={brand})")
+                    s_res = inventory_service.search_query(syn, brand=brand, tier=tier, limit=10)
+                    if s_res.get("items"):
+                        for it in s_res["items"]:
+                            it_key = normalize_part_number(it.get("part_number") or it.get("name") or "")
+                            if it_key and it_key not in seen_ids:
+                                seen_ids.add(it_key)
+                                results.append(it)
+                        break
+
+                # If still no items and part name contains position, try base name with brand
+                if not results:
+                    base_name = re.sub(r'\b(front|rear|left|right|upper|lower|inner|outer)\b', '', name, flags=re.I).strip()
+                    if base_name and base_name.lower() != name.lower():
+                        print(f"   --> Retrying with base part name: '{base_name}' (brand={brand})")
+                        b_res = inventory_service.search_query(base_name, brand=brand, tier=tier, limit=10)
+                        if b_res.get("items"):
+                            for it in b_res["items"]:
+                                it_key = normalize_part_number(it.get("part_number") or it.get("name") or "")
+                                if it_key and it_key not in seen_ids:
+                                    seen_ids.add(it_key)
+                                    results.append(it)
         except Exception as e:
             print(f"⚠️ [Ecommerce Catalogue API] Search error for '{name}': {e}")
 
@@ -440,7 +466,15 @@ def process_user_message(user_id: str, unified_text: str) -> str:
                     else:
                          matched_option = unified_text
 
-                    combined = f"{matched_option} {target}".strip()
+                    # Cleanly merge target and matched_option without duplicate words (e.g. "Air Filter", not "Air Filter Filter")
+                    t_low = target.lower().strip()
+                    m_low = matched_option.lower().strip()
+                    if t_low in m_low:
+                        combined = matched_option
+                    elif m_low in t_low:
+                        combined = target
+                    else:
+                        combined = f"{matched_option} {target}".strip()
                     resolved_items.append(combined)
                     any_resolved = True
                 else:
@@ -610,83 +644,6 @@ def process_user_message(user_id: str, unified_text: str) -> str:
                 
                 return "Catelog error our team will contact you soon"
 
-    # # --- AMPIGUITY CHECK (Mid-Step) ---
-    # # Only if we are NOT already in a clarification loop (which we just handled or cleared)
-    # if item_descriptions and current_state != "clarification_part" and current_vin:
-    #     # Call GPT to detect ambiguity dynamically
-    #     ambiguity_result = gpt.detect_ambiguity(item_descriptions)
-        
-    #     clarifications = ambiguity_result.get("clarifications", []) # Expecting list
-        
-    #     if ambiguity_result.get("is_ambiguous") and clarifications:
-    #         # Combine Questions
-    #         questions = []
-    #         pending_clarifications = []
-            
-    #         # Identify all targets involved
-    #         # Identify all targets involved using FUZZY MATCHING logic
-    #         # Because GPT might return "tie rod" when the list has "tie rod steering rod"
-            
-    #         # 1. Map each clarification back to an index in item_descriptions
-    #         clarification_indices = set()
-            
-    #         final_clarifications = []
-            
-    #         for c in clarifications:
-    #              target_gpt = c["target_item"]
-                 
-    #              # Find best match in item_descriptions
-    #              best_match_idx = -1
-    #              best_match_len = 0
-                 
-    #              for idx, item in enumerate(item_descriptions):
-    #                  # If GPT target is substring of Item (e.g. 'tie rod' in 'tie rod steering') -> Match
-    #                  # OR Item is substring of Target -> Match
-    #                  if target_gpt.lower() in item.lower() or item.lower() in target_gpt.lower():
-    #                      # Pick the longest match if multiple? usually just first valid is fine.
-    #                      if len(item) > best_match_len:
-    #                          best_match_idx = idx
-    #                          best_match_len = len(item)
-                
-    #              if best_match_idx != -1:
-    #                  clarification_indices.add(best_match_idx)
-    #                  # Update the target to be the REAL item name, not just what GPT said
-    #                  c["target_item"] = item_descriptions[best_match_idx]
-    #                  final_clarifications.append(c)
-    #              else:
-    #                  print(f"⚠️ Could not map GPT target '{target_gpt}' to any item. Ignoring.")
-            
-    #         if not final_clarifications:
-    #             return "Ambiguity detected but could not resolve target items."
-
-    #         # 2. Identify NOT ambiguous terms (indices not in set)
-    #         other_items = [item for i, item in enumerate(item_descriptions) if i not in clarification_indices]
-            
-    #         questions = []
-    #         pending_clarifications = []
-
-    #         for c in final_clarifications:
-    #              target = c.get("target_item")
-    #              q_text = c.get("question")
-    #              opts = c.get("valid_options", [])
-                 
-    #              questions.append(f"For the *{target}*, {q_text}")
-    #              pending_clarifications.append({
-    #                  "target": target,
-    #                  "valid_options": opts
-    #              })
-            
-    #         combined_question_text = "\n".join(questions)
-    #         print(f"🛑 Ambiguity Detected via GPT. Asking: {combined_question_text}")
-            
-    #         # Save State
-    #         session["state"]["awaiting"] = "clarification_part"
-    #         session["state"]["pending_clarifications"] = pending_clarifications
-    #         session["state"]["clarification_others"] = other_items 
-    #         save_session(user_id, session)
-            
-    #         # Immediate Return
-    #         return combined_question_text
      # --- AMPIGUITY CHECK (Mid-Step) ---
     # Only if we are NOT already in a clarification loop (which we just handled or cleared)
     if item_descriptions and current_state != "clarification_part" and current_vin:
@@ -757,8 +714,13 @@ def process_user_message(user_id: str, unified_text: str) -> str:
                      continue
                  seen_questions.add(question_key)
 
-                 # Output: "For the <rule text>" e.g. "For the Brake pads  - Front or Rear"
-                 questions.append(f"For the {target} - {q_text}")
+                 # Output: "For the <rule text>" e.g. "For the Brake pads - Front or Rear"
+                 opts_str = " or ".join(opts) if opts else ""
+                 if opts_str and not any(opt.lower() in q_text.lower() for opt in opts[:2]):
+                     full_q = f"For the {target} - {q_text} ({opts_str})"
+                 else:
+                     full_q = f"For the {target} - {q_text}"
+                 questions.append(full_q)
                  pending_clarifications.append({
                      "target": target,
                      "valid_options": opts

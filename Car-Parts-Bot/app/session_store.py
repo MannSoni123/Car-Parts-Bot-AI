@@ -14,6 +14,9 @@ def _session_key(user_id: str) -> str:
     return f"{SESSION_KEY_PREFIX}{user_id}"
 
 
+# Fallback in-memory session cache if Redis temporarily fails or has RDB errors
+_MEMORY_SESSIONS: Dict[str, Dict[str, Any]] = {}
+
 # ================= CORE API =================
 
 def get_session(user_id: str) -> Dict[str, Any]:
@@ -21,16 +24,23 @@ def get_session(user_id: str) -> Dict[str, Any]:
     Fetch an existing session or create a new one.
     """
     key = _session_key(user_id)
-    raw = redis_client.get(key)
+    raw = None
+    try:
+        raw = redis_client.get(key)
+    except Exception as e:
+        print(f"⚠️ Redis get error: {e}")
 
     if raw:
         try:
             return json.loads(raw)
         except Exception:
-            # Corrupted session → reset safely
             pass
+    elif user_id in _MEMORY_SESSIONS:
+        return _MEMORY_SESSIONS[user_id]
 
-    return _new_session()
+    new_sess = _new_session()
+    _MEMORY_SESSIONS[user_id] = new_sess
+    return new_sess
 
 
 def save_session(user_id: str, session: Dict[str, Any]) -> None:
@@ -39,19 +49,27 @@ def save_session(user_id: str, session: Dict[str, Any]) -> None:
     """
     key = _session_key(user_id)
     session["meta"]["updated_at"] = int(time.time())
+    _MEMORY_SESSIONS[user_id] = session
 
-    redis_client.setex(
-        key,
-        SESSION_TTL,
-        json.dumps(session)
-    )
+    try:
+        redis_client.setex(
+            key,
+            SESSION_TTL,
+            json.dumps(session)
+        )
+    except Exception as e:
+        print(f"⚠️ Redis save_session warning (using memory session): {e}")
 
 
 def clear_session(user_id: str) -> None:
     """
     Explicitly clear a user session.
     """
-    redis_client.delete(_session_key(user_id))
+    _MEMORY_SESSIONS.pop(user_id, None)
+    try:
+        redis_client.delete(_session_key(user_id))
+    except Exception:
+        pass
 
 
 # ================= SESSION STRUCTURE =================

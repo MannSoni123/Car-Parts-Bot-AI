@@ -121,6 +121,26 @@ class InventoryService:
 
                 missing_pns = [p for p in clean_pns if normalize_part_number(p) not in found_norms]
 
+                # Fallback for missing part numbers: Query GET /api/public/inventory?q={pn}
+                if missing_pns:
+                    for mpn in list(missing_pns):
+                        try:
+                            fallback_res = self._direct_get_query(mpn, tier=tier, limit=5)
+                            if fallback_res:
+                                for f_item in fallback_res:
+                                    f_pn_norm = normalize_part_number(f_item.get("part_number", ""))
+                                    f_oem_norm = normalize_part_number(f_item.get("oem_number", ""))
+                                    mpn_norm = normalize_part_number(mpn)
+                                    if mpn_norm in (f_pn_norm, f_oem_norm) or mpn_norm in normalize_part_number(f_item.get("name", "")):
+                                        if f_item not in formatted_items:
+                                            formatted_items.append(f_item)
+                                        items_map[mpn_norm] = f_item
+                                        if mpn in missing_pns:
+                                            missing_pns.remove(mpn)
+                                        break
+                        except Exception:
+                            pass
+
                 result = {
                     "success": True,
                     "count": len(formatted_items),
@@ -160,15 +180,72 @@ class InventoryService:
                 "missing_pns": clean_pns
             }
 
+    def _generate_query_variations(self, q: str) -> list[str]:
+        variations = [q.strip()]
+        lower_q = q.strip().lower()
+        irregulars = {
+            "brakes": "brake",
+            "pads": "pad",
+            "filters": "filter",
+            "plugs": "plug",
+            "wipers": "wiper",
+            "blades": "blade",
+            "discs": "disc",
+            "rotors": "rotor",
+            "shocks": "shock",
+            "struts": "strut",
+            "valves": "valve",
+            "belts": "belt",
+            "hoses": "hose",
+            "lights": "light",
+            "bulbs": "bulb",
+            "mirrors": "mirror",
+            "bearings": "bearing",
+            "gaskets": "gasket",
+            "sensors": "sensor",
+            "pumps": "pump",
+            "coils": "coil",
+            "calipers": "caliper",
+        }
+        words = lower_q.split()
+        singular_words = []
+        has_change = False
+        for w in words:
+            if w in irregulars:
+                singular_words.append(irregulars[w])
+                has_change = True
+            elif len(w) > 3 and w.endswith("s") and not w.endswith("ss"):
+                singular_words.append(w[:-1])
+                has_change = True
+            else:
+                singular_words.append(w)
+
+        if has_change:
+            singular_phrase = " ".join(singular_words)
+            if singular_phrase not in variations:
+                variations.append(singular_phrase)
+
+        return variations
+
+    def _direct_get_query(self, q: str, brand: str | None = None, tier: str = "IND", limit: int = 20) -> list:
+        base_url = self._get_base_url()
+        url = f"{base_url}/api/public/inventory"
+        params = {"q": q, "tier": tier, "limit": limit}
+        if brand:
+            params["brand"] = brand
+        try:
+            resp = requests.get(url, headers=self._get_headers(), params=params, timeout=10)
+            if resp.status_code == 200:
+                raw_items = resp.json().get("items", [])
+                return [self.format_inventory_item(item, tier) for item in raw_items]
+        except Exception:
+            pass
+        return []
+
     def search_query(self, q: str, brand: str | None = None, tier: str = "IND", limit: int = 20) -> dict:
         """
         Mixed query or part-name search using GET /api/public/inventory.
-        Returns dict with:
-          success: bool
-          query: str
-          is_mixed_query: bool
-          count: int
-          items: list[dict] (formatted for bot)
+        Supports automatic singular/plural variations.
         """
         tier = self._validate_tier(tier)
         q = (q or "").strip()
@@ -185,66 +262,44 @@ class InventoryService:
         except Exception:
             pass
 
-        base_url = self._get_base_url()
-        url = f"{base_url}/api/public/inventory"
-        params = {
-            "q": q,
-            "tier": tier,
-            "limit": limit
+        variations = self._generate_query_variations(q)
+        found_items = []
+        matched_query = q
+
+        for var_q in variations:
+            print(f"[InventoryService] GET /api/public/inventory with q='{var_q}', brand={brand}, tier={tier}...")
+            items = self._direct_get_query(var_q, brand=brand, tier=tier, limit=limit)
+            if items:
+                found_items = items
+                matched_query = var_q
+                break
+
+        # If brand was specified and returned 0, try without brand as fallback
+        if not found_items and brand:
+            for var_q in variations:
+                print(f"[InventoryService] Fallback GET without brand: q='{var_q}'...")
+                items = self._direct_get_query(var_q, brand=None, tier=tier, limit=limit)
+                if items:
+                    found_items = items
+                    matched_query = var_q
+                    break
+
+        result = {
+            "success": True,
+            "query": matched_query,
+            "is_mixed_query": False,
+            "count": len(found_items),
+            "items": found_items
         }
-        if brand:
-            params["brand"] = brand
 
-        print(f"[InventoryService] GET {url} with q='{q}', brand={brand}, tier={tier}...")
-        try:
-            response = requests.get(
-                url,
-                headers=self._get_headers(),
-                params=params,
-                timeout=12
-            )
+        # Cache in Redis for 45 seconds
+        if found_items:
+            try:
+                redis_client.setex(cache_key, 45, json.dumps(result))
+            except Exception:
+                pass
 
-            if response.status_code == 200:
-                data = response.json()
-                raw_items = data.get("items", [])
-                formatted_items = [self.format_inventory_item(item, tier) for item in raw_items]
-
-                result = {
-                    "success": True,
-                    "query": data.get("query", q),
-                    "is_mixed_query": data.get("is_mixed_query", False),
-                    "count": len(formatted_items),
-                    "items": formatted_items
-                }
-
-                # Cache in Redis for 45 seconds
-                try:
-                    redis_client.setex(cache_key, 45, json.dumps(result))
-                except Exception:
-                    pass
-
-                return result
-
-            else:
-                error_body = response.text[:300] if response.text else ""
-                print(f"[InventoryService] Query search HTTP {response.status_code}: {error_body}")
-                return {
-                    "success": False,
-                    "error": f"HTTP {response.status_code}",
-                    "query": q,
-                    "count": 0,
-                    "items": []
-                }
-
-        except Exception as e:
-            print(f"[InventoryService] Query search network error: {e}")
-            return {
-                "success": False,
-                "error": str(e),
-                "query": q,
-                "count": 0,
-                "items": []
-            }
+        return result
 
     def format_inventory_item(self, item: dict, tier: str = "IND") -> dict:
         """
@@ -266,11 +321,18 @@ class InventoryService:
             except (ValueError, TypeError):
                 price_val = None
 
-        part_num = item.get("part_number") or item.get("oem_number") or ""
+        raw_pn = item.get("part_number") or item.get("oem_number") or ""
+        clean_part_num = raw_pn
+        if "," in clean_part_num:
+            parts_split = [p.strip() for p in clean_part_num.split(",") if p.strip()]
+            if parts_split:
+                clean_part_num = parts_split[0]
+
         brand_name = item.get("manufacturer") or item.get("brand") or "OEM"
 
         return {
-            "part_number": part_num,
+            "part_number": clean_part_num,
+            "raw_part_number": raw_pn,
             "oem_number": item.get("oem_number"),
             "brand": brand_name,
             "name": item.get("name") or "Car Part",

@@ -104,129 +104,71 @@ def search_parts_in_db(part_numbers: list, tier: str = "IND") -> list:
 
 def search_catalog_by_name(vin: str, part_names: list, vin_info: dict = None, tier: str = "IND") -> list:
     """
-    Search external vehicle catalog microservice (api.carparts.koncpt-ai.tech) using VIN and Part Name.
-    Retrieves vehicle schematics, extracts candidate OEM part numbers, and cross-checks them
-    against ecommerce inventory API (carpartsai.ae/api/public/inventory) for real-time stock and AED pricing.
-    Falls back to direct keyword query on ecommerce inventory API if schematics are unavailable.
+    Search real-time part numbers, stock, and pricing from the CarParts ecommerce catalogue API (carpartsai.ae).
+    Filters parts by vehicle brand (e.g. BMW, Honda) decoded from the VIN.
+    Cross-checks with vehicle schematics to extract matching OEM numbers if needed, but ALWAYS
+    returns genuine in-stock products with AED prices from the ecommerce catalogue API.
     """
-    if not vin or not part_names:
+    if not part_names:
         return []
 
     results = []
-    print(f"🔎 Searching Catalog with VIN={vin} for Content={part_names} (tier={tier})")
+    brand = vin_info.get("brand") if vin_info else None
+    print(f"🔎 [Ecommerce Catalogue Search] Searching carpartsai.ae for '{part_names}' (VIN={vin}, Brand={brand})")
 
-    # 1. Primary: Vehicle Catalog Microservice (api.carparts.koncpt-ai.tech)
+    # 1. PRIMARY: Query CarParts E-Commerce Catalogue API directly for each requested part name
+    seen_ids = set()
+    for name in part_names:
+        try:
+            q_res = inventory_service.search_query(name, brand=brand, tier=tier, limit=10)
+            if q_res.get("items"):
+                for it in q_res["items"]:
+                    it_key = normalize_part_number(it.get("part_number") or it.get("name") or "")
+                    if it_key and it_key not in seen_ids:
+                        seen_ids.add(it_key)
+                        results.append(it)
+        except Exception as e:
+            print(f"⚠️ [Ecommerce Catalogue API] Search error for '{name}': {e}")
+
+    if results:
+        print(f"✅ [Ecommerce Catalogue API] Found {len(results)} matching products from carpartsai.ae.")
+        return results
+
+    # 2. SECONDARY: If direct keyword search returned 0 items, check vehicle schematics
+    # to extract OEM part numbers, and cross-check those OEM numbers against ecommerce inventory.
     try:
-        if not vin_info:
+        if not vin_info and vin:
             vin_info = catalog_service.decode_vin(vin)
 
         if vin_info and vin_info.get("brand") and vin_info.get("model_number"):
             extracted_parts = catalog_service.search_schematics_and_extract_parts(vin_info, part_names)
             if extracted_parts:
-                print(f"   --> Found {len(extracted_parts)} raw schematic parts in catalog.")
-
-                # Filter by relevance with GPT
+                print(f"   --> Found {len(extracted_parts)} raw schematic parts in vehicle catalog.")
                 try:
                     parts_list = gpt.filter_parts_by_relevance(extracted_parts, " ".join(part_names))
-                except Exception as e:
-                    print(f"   Relevance filter exception: {e}")
+                except Exception:
                     parts_list = extracted_parts[:8]
-
-                if not parts_list:
-                    parts_list = extracted_parts[:5]
 
                 found_oem_numbers = [
                     normalize_part_number(p.get("number"))
-                    for p in parts_list
+                    for p in (parts_list or extracted_parts[:5])
                     if p.get("number")
                 ]
 
-                print(f"   --> Extracted OEM Numbers: {found_oem_numbers}")
-
                 if found_oem_numbers:
-                    # Cross-check against Ecommerce Inventory API
                     inv_res = inventory_service.lookup_batch(found_oem_numbers, tier=tier)
-                    inv_map = inv_res.get("map", {})
-
-                    for p in parts_list:
-                        norm_pn = normalize_part_number(p.get("number"))
-                        if norm_pn in inv_map:
-                            inv_item = dict(inv_map[norm_pn])
-                            if p.get("diagram_name"):
-                                inv_item["diagram_name"] = p.get("diagram_name")
-                            if p.get("diagram_code"):
-                                inv_item["diagram_code"] = p.get("diagram_code")
-                            if p.get("image_url") and not inv_item.get("image_url"):
-                                inv_item["image_url"] = p.get("image_url")
-                            results.append(inv_item)
-                        else:
-                            results.append({
-                                "part_number": p.get("number"),
-                                "brand": p.get("brand") or vin_info.get("brand") or "OEM/Catalog",
-                                "name": p.get("name") or "Catalog Part",
-                                "price": None,
-                                "currency": "AED",
-                                "qty": 0,
-                                "stock": 0,
-                                "tag": f"Catalog Match ({p.get('diagram_name') or 'Not in Stock'})",
-                                "status": "out_of_stock",
-                                "diagram_name": p.get("diagram_name"),
-                                "diagram_code": p.get("diagram_code"),
-                                "image_url": p.get("image_url"),
-                                "source": "catalog_schematic"
-                            })
-
-                    if results:
-                        return results
+                    if inv_res.get("items"):
+                        print(f"✅ [Cross-Reference] Found {len(inv_res['items'])} matching ecommerce items for schematic OEM numbers.")
+                        for it in inv_res["items"]:
+                            it_key = normalize_part_number(it.get("part_number") or it.get("name") or "")
+                            if it_key and it_key not in seen_ids:
+                                seen_ids.add(it_key)
+                                results.append(it)
     except Exception as e:
-        print(f"⚠️ [Catalog Microservice] Error in search: {e}")
+        print(f"⚠️ [Catalog Cross-Reference] Error: {e}")
 
-    # 2. Fallback: Search E-commerce Inventory API directly by query tokens
-    try:
-        brand = vin_info.get("brand") if vin_info else None
-        for name in part_names:
-            q_res = inventory_service.search_query(name, brand=brand, tier=tier, limit=10)
-            if q_res.get("success") and q_res.get("items"):
-                print(f"   ✅ [Inventory Search Fallback] Found {len(q_res['items'])} items for '{name}'.")
-                results.extend(q_res["items"])
-        if results:
-            return results
-    except Exception as e:
-        print(f"⚠️ [Inventory Search Fallback] Error: {e}")
-
-    # 3. Tertiary fallback: Legacy Scraper
-    scraper = get_scraper()
-    if scraper:
-        for name in part_names:
-            try:
-                scrape_data = scraper.search_part(vin, name)
-                if "parts" in scrape_data:
-                    parts_list = scrape_data["parts"]
-                    try:
-                        parts_list = gpt.filter_parts_by_relevance(parts_list, name)
-                    except Exception:
-                        pass
-                    found_oem_numbers = [normalize_part_number(p.get("number")) for p in parts_list if p.get("number")]
-                    if found_oem_numbers:
-                        inv_res = inventory_service.lookup_batch(found_oem_numbers, tier=tier)
-                        if inv_res.get("items"):
-                            results.extend(inv_res["items"])
-                        else:
-                            for p in parts_list[:3]:
-                                results.append({
-                                    "part_number": p.get("number"),
-                                    "brand": "OEM/Catalog",
-                                    "name": p.get("name") or name,
-                                    "price": None,
-                                    "currency": "AED",
-                                    "qty": 0,
-                                    "stock": 0,
-                                    "tag": "Catalog Match (Not in Stock)",
-                                    "status": "out_of_stock"
-                                })
-            except Exception as e:
-                print(f"Legacy scraper error: {e}")
-
+    # Return only genuine products found in ecommerce inventory.
+    # Never return synthetic out-of-stock placeholder objects from PartSouq schematics.
     return results
 
 def search_db_by_tag(descriptions: list, tier: str = "IND") -> list:

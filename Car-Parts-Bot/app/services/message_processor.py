@@ -12,7 +12,13 @@ import re
 gpt = GPTService()
 
 # --- CONSTANTS ---
-# CLARIFICATION_RULES Removed - Now Dynamic via GPT
+# Live prompt Failure Handling message (carpartsai.ae)
+FAILURE_HANDLING_MESSAGE = (
+    "Thank you for your message.\n"
+    "I am unable to fetch your details accurately at the moment.\n"
+    "Our team will contact you soon to assist you further.\n"
+    "You may also reach us on WhatsApp at +971504827057."
+)
 
 def search_parts_in_db(part_numbers: list, tier: str = "IND") -> list:
     """
@@ -193,9 +199,11 @@ def search_catalog_by_name(vin: str, part_names: list, vin_info: dict = None, ti
     except Exception as e:
         print(f"⚠️ [Catalog Cross-Reference] Error: {e}")
 
-    # Return only genuine products found in ecommerce inventory.
-    # Never return synthetic out-of-stock placeholder objects from PartSouq schematics.
-    return results
+    # Return only genuine in-stock products found in ecommerce inventory.
+    # Enforce Stock Filtering rule: Quantity > 0, sorted by lowest rate first.
+    in_stock_results = [it for it in results if int(it.get("stock") or 0) > 0]
+    in_stock_results.sort(key=lambda x: float(x.get("price") or 999999) if x.get("price") is not None else 999999)
+    return in_stock_results
 
 def search_db_by_tag(descriptions: list, tier: str = "IND") -> list:
     """
@@ -591,7 +599,7 @@ def process_user_message(user_id: str, unified_text: str) -> str:
                                 "whatsapp_user_id": user_id,
                                 "user_message": unified_text,
                                 "intent": "system",
-                                "bot_response": "Catelog error our team will contact you soon",
+                                "bot_response": FAILURE_HANDLING_MESSAGE,
                                 "timestamp": ts
                             })
                             lovable_service.post_analytics_events({
@@ -610,7 +618,7 @@ def process_user_message(user_id: str, unified_text: str) -> str:
                             })
                         except: pass
                             
-                        return "Catelog error our team will contact you soon"
+                        return FAILURE_HANDLING_MESSAGE
             except Exception as e:
                 print(f"⚠️ VIN Decode Warning (non-fatal): {e}")
                 vin_search_logs.append({"vin": current_vin, "status": "failure"})
@@ -623,7 +631,7 @@ def process_user_message(user_id: str, unified_text: str) -> str:
                         "whatsapp_user_id": user_id,
                         "user_message": unified_text,
                         "intent": "system",
-                        "bot_response": "Catelog error our team will contact you soon",
+                        "bot_response": FAILURE_HANDLING_MESSAGE,
                         "timestamp": ts
                     })
                     lovable_service.post_analytics_events({
@@ -642,7 +650,7 @@ def process_user_message(user_id: str, unified_text: str) -> str:
                     })
                 except: pass
                 
-                return "Catelog error our team will contact you soon"
+                return FAILURE_HANDLING_MESSAGE
 
      # --- AMPIGUITY CHECK (Mid-Step) ---
     # Only if we are NOT already in a clarification loop (which we just handled or cleared)

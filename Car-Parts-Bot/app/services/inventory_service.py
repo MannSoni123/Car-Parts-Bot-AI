@@ -26,15 +26,23 @@ class InventoryService:
 
     def _get_base_url(self) -> str:
         try:
-            return current_app.config.get("ECOMMERCE_API_BASE_URL") or current_app.config.get("LOVABLE_API_BASE_URL", "https://carpartsai.ae")
+            val = current_app.config.get("ECOMMERCE_API_BASE_URL") or current_app.config.get("LOVABLE_API_BASE_URL")
+            if val:
+                return val
         except Exception:
-            return "https://carpartsai.ae"
+            pass
+        import os
+        return os.getenv("ECOMMERCE_API_BASE_URL") or os.getenv("LOVABLE_API_BASE_URL") or "https://carpartsai.ae"
 
     def _get_api_key(self) -> str:
         try:
-            return current_app.config.get("CHATBOT_API_KEY", "")
+            val = current_app.config.get("CHATBOT_API_KEY", "")
+            if val:
+                return val
         except Exception:
-            return ""
+            pass
+        import os
+        return os.getenv("CHATBOT_API_KEY", "")
 
     def _get_headers(self) -> dict:
         api_key = self._get_api_key()
@@ -225,6 +233,25 @@ class InventoryService:
             if singular_phrase not in variations:
                 variations.append(singular_phrase)
 
+        # 2. Position-stripped variations (e.g. "rear shock absorber" -> "shock absorber", "front brake pad" -> "brake pad")
+        pos_regex = r'\b(front|rear|left|right|upper|lower|inner|outer)\b'
+        stripped_pos = re.sub(pos_regex, '', lower_q, flags=re.I).strip()
+        stripped_pos = re.sub(r'\s+', ' ', stripped_pos)
+        if stripped_pos and stripped_pos != lower_q:
+            if stripped_pos not in variations:
+                variations.append(stripped_pos)
+            stripped_singulars = []
+            for w in stripped_pos.split():
+                if w in irregulars:
+                    stripped_singulars.append(irregulars[w])
+                elif len(w) > 3 and w.endswith("s") and not w.endswith("ss"):
+                    stripped_singulars.append(w[:-1])
+                else:
+                    stripped_singulars.append(w)
+            stripped_singular_phrase = " ".join(stripped_singulars)
+            if stripped_singular_phrase not in variations:
+                variations.append(stripped_singular_phrase)
+
         return variations
 
     def _direct_get_query(self, q: str, brand: str | None = None, tier: str = "IND", limit: int = 20) -> list:
@@ -245,7 +272,9 @@ class InventoryService:
     def search_query(self, q: str, brand: str | None = None, tier: str = "IND", limit: int = 20) -> dict:
         """
         Mixed query or part-name search using GET /api/public/inventory.
-        Supports automatic singular/plural variations.
+        Supports automatic singular/plural variations and position stripping.
+        Strictly respects brand filter when provided to avoid cross-brand mismatch.
+        Prioritizes in-stock items sorted lowest price first.
         """
         tier = self._validate_tier(tier)
         q = (q or "").strip()
@@ -266,23 +295,36 @@ class InventoryService:
         found_items = []
         matched_query = q
 
+        # Search variations with brand filter
         for var_q in variations:
             print(f"[InventoryService] GET /api/public/inventory with q='{var_q}', brand={brand}, tier={tier}...")
             items = self._direct_get_query(var_q, brand=brand, tier=tier, limit=limit)
             if items:
-                found_items = items
-                matched_query = var_q
-                break
+                in_stock_items = [it for it in items if int(it.get("stock") or 0) > 0]
+                if in_stock_items:
+                    found_items = in_stock_items
+                    matched_query = var_q
+                    break
+                elif not found_items:
+                    # Keep as fallback only if no subsequent variation has in-stock items
+                    found_items = items
+                    matched_query = var_q
 
-        # If brand was specified and returned 0, try without brand as fallback
-        if not found_items and brand:
+        # If brand was NOT specified at all, query without brand
+        if not found_items and not brand:
             for var_q in variations:
-                print(f"[InventoryService] Fallback GET without brand: q='{var_q}'...")
                 items = self._direct_get_query(var_q, brand=None, tier=tier, limit=limit)
                 if items:
                     found_items = items
                     matched_query = var_q
                     break
+
+        # Sort: In-stock first, then lowest price first (following prompt rules)
+        if found_items:
+            found_items.sort(key=lambda x: (
+                0 if int(x.get("stock") or 0) > 0 else 1,
+                float(x.get("price") or 999999) if x.get("price") is not None else 999999
+            ))
 
         result = {
             "success": True,

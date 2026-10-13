@@ -258,23 +258,22 @@ class GPTService:
              strict_instructions.append("5. If the answer is not in the Reference Material, explicitly say 'Information not found in our reference'.")
              
 
-        has_out_of_stock = any(p.get("status") == "out_of_stock" for p in parts)
+        failure_msg = (
+            "Thank you for your message.\n"
+            "I am unable to fetch your details accurately at the moment.\n"
+            "Our team will contact you soon to assist you further.\n"
+            "You may also reach us on WhatsApp at +971504827057."
+        )
+
         has_error = any(p.get("status") == "error" for p in parts)
-        has_empty = any(p.get("status") == "empty" for p in parts)
         failed_vin = context_data.get("failed_vin_decode", False)
         
-        # Priority: Failed VIN > Error > Out of Stock > Empty
         if failed_vin:
-             strict_instructions.append("CRITICAL: The VIN provided by the user is invalid or not found in the catalog. You MUST inform the user and set the 'whatsapp_text' field exactly to: 'This VIN is not in catalog. Our team will contact you soon.' Do not output or guess any car details or prices.")
+             strict_instructions.append(f"CRITICAL: The VIN provided by the user is invalid or cannot be decoded. According to the Failure Handling rule, you MUST set the 'whatsapp_text' field exactly to:\n{failure_msg}")
         elif has_error:
-             strict_instructions.append("CRITICAL: The catalog search FAILED. You MUST set the 'whatsapp_text' field exactly to: 'Our team will contact you soon for catalog failure.' (plus any helpful context). Do not say 'I couldn't find it', say 'Failed to Catalog'.")
-        elif has_out_of_stock:
-             if user_pns or is_vip:
-                 strict_instructions.append("CRITICAL: Parts were found in the catalog but are NOT in the local database. You MUST start the 'whatsapp_text' field with: 'Found in Catalog but Not in Stock'. List the part numbers found but clearly state they are out of stock.")
-             else:
-                 strict_instructions.append("CRITICAL: Parts were found in the catalog but are NOT in the local database. You MUST start the 'whatsapp_text' field with: 'Found in Catalog but Not in Stock'. List the items found (Name only) but clearly state they are out of stock. Do NOT show Part Numbers.")
-        elif has_empty and not any(p.get("price") for p in parts): # Only empty/missing
-             strict_instructions.append("CRITICAL: The catalog search returned NO results. You MUST set the 'whatsapp_text' field exactly to: 'There is no item in catalog for this. Our team will contact you soon.'. Do not offer to search again.")
+             strict_instructions.append(f"CRITICAL: The catalog search failed. According to the Failure Handling rule, you MUST set the 'whatsapp_text' field exactly to:\n{failure_msg}")
+        elif len(parts) == 0 and not should_ask_vin and (user_descs or user_pns):
+             strict_instructions.append(f"CRITICAL: No matching in-stock parts were found. According to the Failure Handling rule, you MUST set the 'whatsapp_text' field exactly to:\n{failure_msg}")
 
         if len(parts) >= 1:
             strict_instructions.append(f"CRITICAL: {len(parts)} parts have been found in the database matching the user's request. You MUST present these parts (Product Name, Brand, Price, Availability). You SHOULD briefly acknowledge the user's specific issue (e.g. 'I see the door handle is broken') derived from the input before listing the parts.")

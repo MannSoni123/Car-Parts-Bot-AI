@@ -422,10 +422,11 @@ class GPTService:
                  [Number]. *[Part Name]*
                     - Brand: [Insert Actual Brand Name]
                     - Price: [Insert Actual Price with AED currency, e.g. "AED 150" or "Call for Details" if unavailable]
+                    - Part Number: [Insert Actual Part Number]
                     - Availability: [Insert In Stock / Out of Stock]
                  
-                 3. STRICT RULE: Do NOT show the "Part Number" field. The user did not ask for it.
-                 4. Only show: Name, Brand, Price, Availability.
+                 3. MANDATORY: You MUST include the 'Part Number' line for EVERY item.
+                 4. Show: Name, Brand, Price, Part Number, Availability.
                  """
                 final_system_message += "\n\n" + format_instruction
         print(f"   📦 [SuperIntent] Parts Context: {len(parts)} items passed to GPT.")

@@ -36,8 +36,8 @@ def _process_single_item(msg_type, content, extra_data=None):
             url = get_media_url(content)
             audio_bytes = download_whatsapp_media(url)
             raw_text, user_lang = transcribe_audio(audio_bytes)
-            parsed = json.loads(clean_voice_text(raw_text, user_lang))
-            return parsed.get("english", "")
+            # Prefer user's native language text to preserve natural language reply
+            return parsed.get("native") or raw_text or parsed.get("english", "")
             
         # ---- DOCUMENT ----
         elif msg_type == "document":

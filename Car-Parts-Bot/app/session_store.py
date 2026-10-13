@@ -48,6 +48,8 @@ def save_session(user_id: str, session: Dict[str, Any]) -> None:
     Persist session with TTL refresh.
     """
     key = _session_key(user_id)
+    if "meta" not in session or not isinstance(session["meta"], dict):
+        session["meta"] = {}
     session["meta"]["updated_at"] = int(time.time())
     _MEMORY_SESSIONS[user_id] = session
 

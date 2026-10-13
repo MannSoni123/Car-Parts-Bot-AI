@@ -4,10 +4,12 @@ from flask import current_app
 from app.redis_client import redis_client
 
 class LovableService:
+    _memory_prompts = {}
+
     def get_prompt(self, intent_key: str = "system") -> dict:
         """
         Fetches the prompt config from Lovable API, caching it in Redis for 5 minutes.
-        Returns a dict matching the IntentPrompt structure, or None if it fails.
+        Returns a dict matching the IntentPrompt structure, or cached fallback if API fails.
         """
         cache_key = f"lovable_prompt:{intent_key}"
 
@@ -15,7 +17,9 @@ class LovableService:
             cached = redis_client.get(cache_key)
             if cached:
                 print(f"⚡ [LovableService] Loaded '{intent_key}' from Redis Cache.")
-                return json.loads(cached)
+                data = json.loads(cached)
+                self._memory_prompts[intent_key] = data
+                return data
         except Exception as e:
             current_app.logger.warning(f"Redis cache read failed: {e}")
 
@@ -36,20 +40,25 @@ class LovableService:
             
             if data.get("success") and "data" in data:
                 prompt_data = data["data"]
+                self._memory_prompts[intent_key] = prompt_data
                 
-                # Cache for only 5 seconds during testing to see instant updates!
+                # Cache in Redis for 300 seconds (5 minutes)
                 try:
-                    redis_client.setex(cache_key, 5, json.dumps(prompt_data))
+                    redis_client.setex(cache_key, 300, json.dumps(prompt_data))
                 except Exception as e:
                     current_app.logger.warning(f"Redis cache write failed: {e}")
                 
                 return prompt_data
             else:
                 current_app.logger.error(f"Lovable Prompt API returned unsuccessful response: {data}")
-                return None
         except Exception as e:
             current_app.logger.error(f"Failed to fetch prompt from Lovable API: {e}")
-            return None
+
+        # Fallback to in-memory cache if network/API failed
+        if intent_key in self._memory_prompts:
+            print(f"🛡️ [LovableService] Using in-memory fallback prompt for '{intent_key}'")
+            return self._memory_prompts[intent_key]
+        return None
 
     def post_analytics_events(self, payload: dict):
         """

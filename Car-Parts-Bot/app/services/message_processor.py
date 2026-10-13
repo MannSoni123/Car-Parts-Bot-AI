@@ -59,17 +59,18 @@ def search_parts_in_db(part_numbers: list, tier: str = "IND") -> list:
         if not matched:
             remaining_pns.append(p)
 
-    # 1B. Direct ecommerce query fallback for any remaining part numbers
+    # 1B. Direct ecommerce advanced search fallback for any remaining part numbers
+    # (uses GET query — same tokenized/fuzzy matching as carpartsai.ae website search bar)
     for rpn in list(remaining_pns):
         try:
-            q_res = inventory_service.search_query(rpn, tier=tier, limit=5)
+            q_res = inventory_service.advanced_search(rpn, tier=tier, limit=5)
             if q_res.get("items"):
                 for it in q_res["items"]:
                     if it not in results:
                         results.append(it)
                 remaining_pns.remove(rpn)
         except Exception as e:
-            print(f"   [Inventory API] Fallback query error for '{rpn}': {e}")
+            print(f"   [Inventory API] Advanced search error for '{rpn}': {e}")
 
     if not remaining_pns:
         return results
@@ -888,18 +889,28 @@ We supply Genuine and Aftermarket spare parts for the following brands: \n
         catalog_matches = search_catalog_by_name(current_vin, item_descriptions, vin_info=vin_info, tier=user_tier)
         parts_found.extend(catalog_matches)
     elif not current_vin and item_descriptions and not parts_found and not part_numbers:
+        # No VIN: use advanced search (same as website search bar) for each description
         for desc in item_descriptions:
-            q_res = inventory_service.search_query(desc, tier=user_tier, limit=5)
+            q_res = inventory_service.advanced_search(desc, tier=user_tier, limit=5)
             if q_res.get("items"):
                 parts_found.extend(q_res["items"])
 
     # 3. Fallback for mixed query (e.g. "129 oil filter") when individual PN search had 0 items
     if part_numbers and item_descriptions and not parts_found:
         combined_query = f"{' '.join(part_numbers)} {' '.join(item_descriptions)}"
-        q_res = inventory_service.search_query(combined_query, tier=user_tier, limit=5)
+        q_res = inventory_service.advanced_search(combined_query, tier=user_tier, limit=5)
         if q_res.get("items"):
             parts_found.extend(q_res["items"])
             missing_pns = []
+
+    # 4. Fallback: if part_numbers were provided but still nothing found, try advanced search as last resort
+    if part_numbers and not parts_found:
+        for pn in part_numbers:
+            q_res = inventory_service.advanced_search(pn, tier=user_tier, limit=10)
+            if q_res.get("items"):
+                parts_found.extend(q_res["items"])
+                pn_norm = normalize_part_number(pn)
+                missing_pns = [m for m in missing_pns if normalize_part_number(m) != pn_norm]
 
     # --- STEP 3: CONTEXT & CHUNKING ---
     replies = []

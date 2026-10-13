@@ -746,6 +746,7 @@ All other phrases (including 'I am SellonE...', 'We supply Genuine and Aftermark
         5. Fix spelling errors (e.g. "shok" -> "shock").
         6. Remove generic noise words like "price", "cost", "genuine", "original".
         7. CRITICAL: Return ONLY the single clean canonical part name. DO NOT concatenate multiple aliases together into one string.
+        8. MULTILINGUAL AUTOMOTIVE TERMS: If a part name is in another language (e.g. Arabic 'فلتر زيت' -> Oil Filter, 'تيل فرامل' / 'فحمات' -> Brake Pad, 'مساعدين' / 'مساعد' -> Shock Absorber, 'طرمبة ماء' -> Water Pump, Hindi 'ब्रेक पैड' -> Brake Pad, Spanish 'pastillas de freno' -> Brake Pad), accurately translate the term to its standard English canonical automotive part name.
         
         EXAMPLE OUTPUT:
         {{ "normalized": ["Air Filter", "A C Filter", "Water Pump", "Front Brake Pad", "Brake Pad"] }}
@@ -888,6 +889,11 @@ All other phrases (including 'I am SellonE...', 'We supply Genuine and Aftermark
 
         2. "part_numbers": List of part numbers or OEM codes. 
            - Capture alphanumeric sequences (min 3 chars).
+           - CRITICAL: If the user provides an isolated number or code (e.g. "34116785669", "11427566327", "129", "12341-RNA-A01", "0258017483"), YOU MUST extract it into "part_numbers". DO NOT treat it as a phone number or omit it!
+           - BMW part numbers are typically 7 or 11 digits (e.g. "34116785669", "11427566327").
+           - Honda codes have format like "12341-RNA-A01".
+           - Mercedes part numbers often start with A or digits (e.g. "A0005423100" or "276 180 04 00 95").
+           - Short OEM tags like "129" or "669" when provided must be included in "part_numbers".
            - ALLOW hyphens, dots, or spaces IF they connect parts of a single code (e.g. "17 127 537 - 101" is ONE code).
            - Do not split codes that are separated by a space or hyphen if they look like a single identifier.
            - Treat "17-127-537 -101" as a SINGLE part number string "17-127-537-101".
@@ -914,6 +920,15 @@ All other phrases (including 'I am SellonE...', 'We supply Genuine and Aftermark
                 response_format={"type": "json_object"}
             )
             result = json.loads(response.choices[0].message.content)
+
+            # Deterministic fallback: If user text is an isolated part number/code that GPT missed
+            clean_text = text.strip()
+            alnum_only = re.sub(r'[^A-Za-z0-9]', '', clean_text)
+            if 3 <= len(alnum_only) <= 25 and len(alnum_only) != 17:
+                if re.match(r'^[A-Za-z0-9\-\. ]+$', clean_text) and (any(c.isdigit() for c in clean_text) or '-' in clean_text):
+                    existing = [re.sub(r'[^A-Za-z0-9]', '', p).lower() for p in result.get("part_numbers", [])]
+                    if alnum_only.lower() not in existing:
+                        result.setdefault("part_numbers", []).append(clean_text)
             
             # 2. Dedicated Part Name Extraction (Loose)
             raw_parts = self._extract_part_names_only(text)
@@ -974,10 +989,11 @@ All other phrases (including 'I am SellonE...', 'We supply Genuine and Aftermark
        
         2. Use relevant Emojis (✅, ⚠️, 💰, 🔎) to make it engaging.
         3. **Styling & Layout Rules (CRITICAL)**:
-           - Use *Bold* for ALL labels (e.g., *Brand:*, *Price:*, *Part Number:*).
+           - Use *Bold* for ALL labels (e.g., *Brand:*, *Price:*, *Part Number:*, *Availability:*).
            - Use a standard Bullet Point "•" for list items to look clean.
            - Add a blank line between different parts/items for readability.
            - Ensure the Part Name is also *Bold* or clearly highlighted.
+           - MANDATORY: If the input text includes Part Numbers, you MUST KEEP the '• *Part Number:* [Part Number]' line for EACH item. NEVER omit, hide, or drop the Part Number line!
         4. DEDUPLICATION(MANDATORY): CHECK the Input Text. If it *already* contains "www.carpartsdubai.com or https://carpartsdubai.com/" or a sign-off, do NOT add it again in your output.
         5. NO TRUNCATION: You format EVERY single item in the list. Do not summarize.
         6. Output ONLY the reformatted text.

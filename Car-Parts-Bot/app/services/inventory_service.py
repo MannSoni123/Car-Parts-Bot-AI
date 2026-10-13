@@ -58,7 +58,11 @@ class InventoryService:
 
     def lookup_batch(self, part_numbers: list, tier: str = "IND", limit: int = 100) -> dict:
         """
-        Batch lookup parts by part numbers using POST /api/public/inventory.
+        Batch lookup parts by part numbers.
+        Strategy (mirrors carpartsai.ae website advanced search):
+          1. Try POST /api/public/inventory (exact batch match)
+          2. For any missing PNs (or if POST returns 0), use GET query search
+             (same as the website search bar) which does tokenized/fuzzy matching.
         Returns dict with:
           success: bool
           count: int
@@ -94,6 +98,11 @@ class InventoryService:
         except Exception:
             pass
 
+        formatted_items = []
+        items_map = {}
+        found_norms = set()
+
+        # --- STEP 1: POST /api/public/inventory (exact batch match) ---
         base_url = self._get_base_url()
         url = f"{base_url}/api/public/inventory"
         payload = {
@@ -117,8 +126,6 @@ class InventoryService:
                 formatted_items = [self.format_inventory_item(item, tier) for item in raw_items]
 
                 # Build quick lookup map by normalized part number and OEM number
-                items_map = {}
-                found_norms = set()
                 for item in formatted_items:
                     pn_norm = normalize_part_number(item.get("part_number", ""))
                     oem_norm = normalize_part_number(item.get("oem_number", ""))
@@ -128,95 +135,84 @@ class InventoryService:
                     if oem_norm:
                         items_map[oem_norm] = item
                         found_norms.add(oem_norm)
-
-                missing_pns = [p for p in clean_pns if normalize_part_number(p) not in found_norms]
-
-                # Fallback for missing part numbers: Query GET /api/public/inventory?q={pn}
-                if missing_pns:
-                    for mpn in list(missing_pns):
-                        try:
-                            fallback_res = self._direct_get_query(mpn, tier=tier, limit=10)
-                            if fallback_res:
-                                mpn_norm = normalize_part_number(mpn)
-                                matched_items = []
-                                for f_item in fallback_res:
-                                    f_pn_norm = normalize_part_number(f_item.get("part_number", ""))
-                                    f_oem_norm = normalize_part_number(f_item.get("oem_number", ""))
-                                    f_raw_norm = normalize_part_number(f_item.get("raw_part_number", ""))
-                                    f_tag_norm = normalize_part_number(f_item.get("tag", ""))
-                                    f_name_norm = normalize_part_number(f_item.get("name", ""))
-
-                                    is_match = (
-                                        (f_pn_norm and (mpn_norm in f_pn_norm or f_pn_norm in mpn_norm)) or
-                                        (f_oem_norm and (mpn_norm in f_oem_norm or f_oem_norm in mpn_norm)) or
-                                        (f_raw_norm and (mpn_norm in f_raw_norm or f_raw_norm in mpn_norm)) or
-                                        (f_tag_norm and (mpn_norm in f_tag_norm or f_tag_norm in mpn_norm)) or
-                                        (f_name_norm and (mpn_norm in f_name_norm or f_name_norm in mpn_norm))
-                                    )
-                                    if is_match:
-                                        matched_items.append(f_item)
-
-                                # If no strict substring matched, accept items returned by API for this query
-                                if not matched_items and fallback_res:
-                                    matched_items = fallback_res[:5]
-
-                                if matched_items:
-                                    # Sort in-stock first, lowest price first
-                                    matched_items.sort(key=lambda x: (
-                                        0 if int(x.get("stock") or 0) > 0 else 1,
-                                        float(x.get("price") or 999999) if x.get("price") is not None else 999999
-                                    ))
-                                    for m_item in matched_items:
-                                        if m_item not in formatted_items:
-                                            formatted_items.append(m_item)
-                                        m_pn_norm = normalize_part_number(m_item.get("part_number", ""))
-                                        items_map[mpn_norm] = m_item
-                                        if m_pn_norm:
-                                            items_map[m_pn_norm] = m_item
-                                    if mpn in missing_pns:
-                                        missing_pns.remove(mpn)
-                        except Exception as e:
-                            print(f"[InventoryService] Fallback query error for '{mpn}': {e}")
-
-                result = {
-                    "success": True,
-                    "count": len(formatted_items),
-                    "items": formatted_items,
-                    "map": items_map,
-                    "missing_pns": missing_pns
-                }
-
-                # Cache in Redis for 45 seconds only when items were found
-                if formatted_items:
-                    try:
-                        redis_client.setex(cache_key, 45, json.dumps(result))
-                    except Exception:
-                        pass
-
-                return result
-
+                print(f"[InventoryService] POST returned {len(formatted_items)} items.")
             else:
                 error_body = response.text[:300] if response.text else ""
-                print(f"[InventoryService] Batch lookup HTTP {response.status_code}: {error_body}")
-                return {
-                    "success": False,
-                    "error": f"HTTP {response.status_code}",
-                    "count": 0,
-                    "items": [],
-                    "map": {},
-                    "missing_pns": clean_pns
-                }
-
+                print(f"[InventoryService] Batch POST HTTP {response.status_code}: {error_body}")
         except Exception as e:
-            print(f"[InventoryService] Batch lookup network error: {e}")
-            return {
-                "success": False,
-                "error": str(e),
-                "count": 0,
-                "items": [],
-                "map": {},
-                "missing_pns": clean_pns
-            }
+            print(f"[InventoryService] Batch POST network error: {e}")
+
+        # --- STEP 2: Advanced Search Fallback (GET query — same as website search bar) ---
+        # For any PNs not found via POST, use the GET query endpoint which does
+        # tokenized/fuzzy matching (this is what carpartsai.ae website uses).
+        missing_pns = [p for p in clean_pns if normalize_part_number(p) not in found_norms]
+
+        if missing_pns:
+            print(f"[InventoryService] {len(missing_pns)} PNs not found via POST. Using GET advanced search...")
+            for mpn in list(missing_pns):
+                try:
+                    fallback_res = self._direct_get_query(mpn, tier=tier, limit=10)
+                    if fallback_res:
+                        mpn_norm = normalize_part_number(mpn)
+                        matched_items = []
+                        for f_item in fallback_res:
+                            f_pn_norm = normalize_part_number(f_item.get("part_number", ""))
+                            f_oem_norm = normalize_part_number(f_item.get("oem_number", ""))
+                            f_raw_norm = normalize_part_number(f_item.get("raw_part_number", ""))
+                            f_tag_norm = normalize_part_number(f_item.get("tag", ""))
+                            f_name_norm = normalize_part_number(f_item.get("name", ""))
+
+                            is_match = (
+                                (f_pn_norm and (mpn_norm in f_pn_norm or f_pn_norm in mpn_norm)) or
+                                (f_oem_norm and (mpn_norm in f_oem_norm or f_oem_norm in mpn_norm)) or
+                                (f_raw_norm and (mpn_norm in f_raw_norm or f_raw_norm in mpn_norm)) or
+                                (f_tag_norm and (mpn_norm in f_tag_norm or f_tag_norm in mpn_norm)) or
+                                (f_name_norm and (mpn_norm in f_name_norm or f_name_norm in mpn_norm))
+                            )
+                            if is_match:
+                                matched_items.append(f_item)
+
+                        # If no strict substring matched, accept all items the API returned
+                        # (the API itself does relevance matching like the website)
+                        if not matched_items and fallback_res:
+                            matched_items = fallback_res[:5]
+
+                        if matched_items:
+                            # Sort in-stock first, lowest price first
+                            matched_items.sort(key=lambda x: (
+                                0 if int(x.get("stock") or 0) > 0 else 1,
+                                float(x.get("price") or 999999) if x.get("price") is not None else 999999
+                            ))
+                            for m_item in matched_items:
+                                if m_item not in formatted_items:
+                                    formatted_items.append(m_item)
+                                m_pn_norm = normalize_part_number(m_item.get("part_number", ""))
+                                items_map[mpn_norm] = m_item
+                                if m_pn_norm:
+                                    items_map[m_pn_norm] = m_item
+                                    found_norms.add(m_pn_norm)
+                            if mpn in missing_pns:
+                                missing_pns.remove(mpn)
+                            print(f"[InventoryService] GET advanced search found {len(matched_items)} items for '{mpn}'.")
+                except Exception as e:
+                    print(f"[InventoryService] GET advanced search error for '{mpn}': {e}")
+
+        result = {
+            "success": True,
+            "count": len(formatted_items),
+            "items": formatted_items,
+            "map": items_map,
+            "missing_pns": missing_pns
+        }
+
+        # Cache in Redis for 45 seconds only when items were found
+        if formatted_items:
+            try:
+                redis_client.setex(cache_key, 45, json.dumps(result))
+            except Exception:
+                pass
+
+        return result
 
     def _generate_query_variations(self, q: str) -> list[str]:
         variations = [q.strip()]
@@ -285,18 +281,25 @@ class InventoryService:
         return variations
 
     def _direct_get_query(self, q: str, brand: str | None = None, tier: str = "IND", limit: int = 20) -> list:
+        """
+        Direct GET query search — mirrors the carpartsai.ae website search bar.
+        Uses tokenized/fuzzy matching for part numbers, keywords, and mixed queries.
+        """
         base_url = self._get_base_url()
         url = f"{base_url}/api/public/inventory"
         params = {"q": q, "tier": tier, "limit": limit}
         if brand:
             params["brand"] = brand
         try:
+            print(f"[InventoryService] GET {url}?q={q}&brand={brand}&tier={tier}&limit={limit}")
             resp = requests.get(url, headers=self._get_headers(), params=params, timeout=10)
             if resp.status_code == 200:
                 raw_items = resp.json().get("items", [])
                 return [self.format_inventory_item(item, tier) for item in raw_items]
-        except Exception:
-            pass
+            else:
+                print(f"[InventoryService] GET query HTTP {resp.status_code}: {resp.text[:200]}")
+        except Exception as e:
+            print(f"[InventoryService] GET query error for '{q}': {e}")
         return []
 
     def search_query(self, q: str, brand: str | None = None, tier: str = "IND", limit: int = 20) -> dict:
@@ -373,10 +376,56 @@ class InventoryService:
 
         return result
 
+    def _clean_part_number(self, raw_pn: str) -> str:
+        """
+        Clean the compound part_number field from the API response.
+        The API returns values like "34 11 6 785 669 ,BMW," or "12341-RNA-A01 ,CIM,".
+        This extracts just the actual part number before the first comma-separated brand/code.
+        """
+        if not raw_pn:
+            return ""
+        # Step 1: Split by comma and take the first non-empty segment
+        if "," in raw_pn:
+            segments = [s.strip() for s in raw_pn.split(",") if s.strip()]
+            if segments:
+                # The first segment is the part number (may include trailing space)
+                clean = segments[0].strip()
+                # If the clean part ends with a known brand name pattern, strip it
+                # e.g. "34 11 6 785 669" from "34 11 6 785 669 ,BMW,"
+                return clean
+        return raw_pn.strip()
+
+    def _clean_oem_number(self, raw_oem: str, part_name: str = "") -> str:
+        """
+        Clean the OEM number by removing trailing product names/descriptions.
+        E.g. '129 OIL FILTER' -> '129', '669 BRAKE DISC' -> '669', '045 SHOCK ABSORBER' -> '045'.
+        """
+        if not raw_oem:
+            return ""
+        s = raw_oem.strip()
+        # If OEM ends with the part name, strip it
+        if part_name and part_name.strip():
+            pn = part_name.strip()
+            if s.upper().endswith(pn.upper()) and len(s) > len(pn):
+                s = s[:-len(pn)].strip()
+        # Also strip common automotive category words if found at the end
+        common_words = [
+            "OIL FILTER", "AIR FILTER", "CABIN FILTER", "FUEL FILTER", "FILTER",
+            "BRAKE DISC", "BRAKE ROTOR", "BRAKE PAD", "BRAKE PADS", "DISC", "PAD", "PADS",
+            "SHOCK ABSORBER", "ABSORBER", "STRUT", "GASKET", "SPARK PLUG", "PLUG",
+            "WATER PUMP", "FUEL PUMP", "PUMP", "SENSOR", "COIL", "WIPER", "BLADE"
+        ]
+        for w in sorted(common_words, key=len, reverse=True):
+            if s.upper().endswith(w) and len(s) > len(w):
+                s = s[:-len(w)].strip()
+                break
+        return s
+
     def format_inventory_item(self, item: dict, tier: str = "IND") -> dict:
         """
         Formats an item from /api/public/inventory into the dictionary structure
         expected by message_processor and gpt_service.
+        Properly cleans compound part_number fields from the API.
         """
         stock_val = 0
         try:
@@ -394,18 +443,19 @@ class InventoryService:
                 price_val = None
 
         raw_pn = item.get("part_number") or item.get("oem_number") or ""
-        clean_part_num = raw_pn
-        if "," in clean_part_num:
-            parts_split = [p.strip() for p in clean_part_num.split(",") if p.strip()]
-            if parts_split:
-                clean_part_num = parts_split[0]
+        clean_part_num = self._clean_part_number(raw_pn)
+
+        # Also clean OEM number if it has brand/name suffix (e.g. "129 OIL FILTER")
+        part_name = item.get("name") or ""
+        raw_oem = item.get("oem_number") or ""
+        clean_oem = self._clean_oem_number(raw_oem, part_name)
 
         brand_name = item.get("manufacturer") or item.get("brand") or "OEM"
 
         return {
             "part_number": clean_part_num,
             "raw_part_number": raw_pn,
-            "oem_number": item.get("oem_number"),
+            "oem_number": clean_oem,
             "brand": brand_name,
             "name": item.get("name") or "Car Part",
             "price": price_val,
@@ -420,5 +470,88 @@ class InventoryService:
             "all_images": item.get("all_images", []),
             "source": "ecommerce_inventory"
         }
+
+    def advanced_search(self, query: str, brand: str | None = None, tier: str = "IND", limit: int = 20) -> dict:
+        """
+        Unified advanced search — mirrors the carpartsai.ae website search bar.
+        Handles part numbers, keywords, mixed queries (e.g. '129 oil filter'),
+        and category searches using GET /api/public/inventory with tokenized matching.
+        
+        This is the RECOMMENDED entry point for all part lookups,
+        equivalent to what the live website uses for its search functionality.
+        
+        Returns dict with:
+          success: bool
+          query: str
+          count: int
+          items: list[dict]
+        """
+        tier = self._validate_tier(tier)
+        q = (query or "").strip()
+        if not q:
+            return {"success": True, "query": "", "count": 0, "items": []}
+
+        # Check Redis Cache
+        cache_key = f"inv:adv:{tier}:{brand or ''}:{q.lower()}"
+        try:
+            cached = redis_client.get(cache_key)
+            if cached:
+                print(f"[InventoryService] Advanced search cache hit for '{q}'.")
+                return json.loads(cached)
+        except Exception:
+            pass
+
+        print(f"[InventoryService] 🔍 Advanced Search: q='{q}', brand={brand}, tier={tier}")
+
+        # Strategy: Try GET query directly (tokenized/fuzzy, same as website)
+        # Then try variations if needed
+        variations = self._generate_query_variations(q)
+        found_items = []
+        matched_query = q
+
+        for var_q in variations:
+            items = self._direct_get_query(var_q, brand=brand, tier=tier, limit=limit)
+            if items:
+                in_stock_items = [it for it in items if int(it.get("stock") or 0) > 0]
+                if in_stock_items:
+                    found_items = in_stock_items
+                    matched_query = var_q
+                    break
+                elif not found_items:
+                    found_items = items
+                    matched_query = var_q
+
+        # Fallback: try without brand filter if no results with brand
+        if not found_items and brand:
+            for var_q in variations:
+                items = self._direct_get_query(var_q, brand=None, tier=tier, limit=limit)
+                if items:
+                    found_items = items
+                    matched_query = var_q
+                    break
+
+        # Sort: In-stock first, then lowest price first
+        if found_items:
+            found_items.sort(key=lambda x: (
+                0 if int(x.get("stock") or 0) > 0 else 1,
+                float(x.get("price") or 999999) if x.get("price") is not None else 999999
+            ))
+
+        result = {
+            "success": True,
+            "query": matched_query,
+            "count": len(found_items),
+            "items": found_items
+        }
+
+        # Cache for 45 seconds
+        if found_items:
+            try:
+                redis_client.setex(cache_key, 45, json.dumps(result))
+            except Exception:
+                pass
+
+        print(f"[InventoryService] Advanced search result: {len(found_items)} items for '{q}'.")
+        return result
 
 inventory_service = InventoryService()

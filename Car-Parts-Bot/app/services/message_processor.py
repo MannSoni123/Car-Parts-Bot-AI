@@ -35,8 +35,9 @@ def search_parts_in_db(part_numbers: list, tier: str = "IND") -> list:
     try:
         inv_res = inventory_service.lookup_batch(part_numbers, tier=tier)
         if inv_res.get("items"):
-            results.extend(inv_res["items"])
-            print(f"   [Inventory API] Found {len(inv_res['items'])} parts for {part_numbers} (tier={tier}).")
+            in_stock_items = [it for it in inv_res["items"] if int(it.get("stock") or 0) > 0]
+            results.extend(in_stock_items)
+            print(f"   [Inventory API] Found {len(in_stock_items)} in-stock parts for {part_numbers} (tier={tier}).")
     except Exception as e:
         print(f"   [Inventory API] Error querying ecommerce inventory: {e}")
 
@@ -65,10 +66,14 @@ def search_parts_in_db(part_numbers: list, tier: str = "IND") -> list:
         try:
             q_res = inventory_service.advanced_search(rpn, tier=tier, limit=5)
             if q_res.get("items"):
-                for it in q_res["items"]:
+                in_stock_adv = [it for it in q_res["items"] if int(it.get("stock") or 0) > 0]
+                for it in in_stock_adv:
                     if it not in results:
                         results.append(it)
-                remaining_pns.remove(rpn)
+                if in_stock_adv:
+                    rpn_norm = normalize_part_number(rpn)
+                    if any(rpn_norm in normalize_part_number(it.get("part_number", "")) or normalize_part_number(it.get("part_number", "")) in rpn_norm for it in in_stock_adv):
+                        remaining_pns.remove(rpn)
         except Exception as e:
             print(f"   [Inventory API] Advanced search error for '{rpn}': {e}")
 
@@ -802,11 +807,12 @@ def process_user_message(user_id: str, unified_text: str) -> str:
     # 1. Search by Part Number (Highest Priority)
     if part_numbers:
         db_results = search_parts_in_db(part_numbers, tier=user_tier)
-        parts_found.extend(db_results)
+        in_stock_results = [p for p in db_results if int(p.get("stock") or 0) > 0]
+        parts_found.extend(in_stock_results)
         
         # Calculate missing PNs
         found_pns_set = set()
-        for p in db_results:
+        for p in in_stock_results:
              found_pns_set.add(normalize_part_number(p.get('part_number', '')))
              if p.get('oem_number'):
                  found_pns_set.add(normalize_part_number(p['oem_number']))
@@ -900,17 +906,21 @@ We supply Genuine and Aftermarket spare parts for the following brands: \n
         combined_query = f"{' '.join(part_numbers)} {' '.join(item_descriptions)}"
         q_res = inventory_service.advanced_search(combined_query, tier=user_tier, limit=5)
         if q_res.get("items"):
-            parts_found.extend(q_res["items"])
-            missing_pns = []
+            in_stock_items = [it for it in q_res["items"] if int(it.get("stock") or 0) > 0]
+            if in_stock_items:
+                parts_found.extend(in_stock_items)
+                missing_pns = []
 
     # 4. Fallback: if part_numbers were provided but still nothing found, try advanced search as last resort
     if part_numbers and not parts_found:
         for pn in part_numbers:
             q_res = inventory_service.advanced_search(pn, tier=user_tier, limit=10)
             if q_res.get("items"):
-                parts_found.extend(q_res["items"])
-                pn_norm = normalize_part_number(pn)
-                missing_pns = [m for m in missing_pns if normalize_part_number(m) != pn_norm]
+                in_stock_items = [it for it in q_res["items"] if int(it.get("stock") or 0) > 0]
+                if in_stock_items:
+                    parts_found.extend(in_stock_items)
+                    pn_norm = normalize_part_number(pn)
+                    missing_pns = [m for m in missing_pns if normalize_part_number(m) != pn_norm]
 
     # --- STEP 3: CONTEXT & CHUNKING ---
     replies = []

@@ -305,7 +305,7 @@ class GPTService:
                  strict_instructions.append(f"CRITICAL: The catalog search failed. According to the Failure Handling rule, you MUST translate into {LANGUAGE_NAMES.get(detected_lang, detected_lang)} and set the 'whatsapp_text' field to:\n{failure_msg}")
              else:
                  strict_instructions.append(f"CRITICAL: The catalog search failed. According to the Failure Handling rule, you MUST set the 'whatsapp_text' field exactly to:\n{failure_msg}")
-        elif len(parts) == 0 and not should_ask_vin and (user_descs or user_pns):
+        elif len(parts) == 0 and not should_ask_vin and user_descs and not user_pns and not context_data.get("missing_pns"):
              if detected_lang != "en":
                  strict_instructions.append(f"CRITICAL: No matching in-stock parts were found. According to the Failure Handling rule, you MUST translate into {LANGUAGE_NAMES.get(detected_lang, detected_lang)} and set the 'whatsapp_text' field to:\n{failure_msg}")
              else:
@@ -351,17 +351,15 @@ class GPTService:
         is_brand_match = any(vin_brand in pb or pb in vin_brand for pb in parts_brands) if (vin_brand and parts_brands) else True
         should_show_vehicle_details = bool(context_data.get('vin_info')) and is_supported_brand and (has_new_vin or is_brand_match)
 
-        # if user_pns or is_vip:
-        if (user_pns or (is_vip and (user_descs or len(parts) > 0))) and not should_ask_vin:
-            # print("we are breaking here")
-            missing_pns = context_data.get("missing_pns", [])
+        has_part_numbers = bool(user_pns or context_data.get("missing_pns"))
+        if (has_part_numbers or (is_vip and (user_descs or len(parts) > 0))) and not should_ask_vin:
+            raw_missing = context_data.get("missing_pns", [])
+            missing_pns = list(dict.fromkeys(raw_missing)) if raw_missing else []
             print(f"   🔢 [SuperIntent] User provided Part Numbers OR VIP. Enforcing EXTENDED FORMAT. Found: {len(parts)}, Missing: {len(missing_pns)}")
             
             # CASE A: Some parts found
             if len(parts) > 0:
                  format_instruction = f"""
-                 CRITICAL: {'VIP REQUEST RECEIVED.' if is_vip else 'The user searched by PART NUMBER.'}
-                 
                  CRITICAL: {'VIP REQUEST RECEIVED.' if is_vip else 'The user searched by PART NUMBER.'}
                  
                  {f'''
@@ -390,7 +388,7 @@ class GPTService:
                     - Brand: [Insert Actual Brand Name]
                     - Price: [Insert Actual Price with AED currency, e.g. "AED 150" or "Call for Details" if unavailable]
                     - Part Number: [Insert Actual Part Number]
-                    - Availability: [Insert In Stock / Out of Stock]
+                    - Availability: In Stock ✅
                     {' - Quantity: [Insert Quantity]' if is_vip else ''}
                  
                  IMPORTANT: Replace the terms in brackets [] with the REAL data from the found parts context. Do NOT use the text "Brand Name" or "Price" literally.
@@ -399,7 +397,7 @@ class GPTService:
                  """
                  
                  if missing_pns:
-                     format_instruction += f"\n\n3. FOR MISSING PARTS: The following part numbers were NOT found in the database: {', '.join(missing_pns)}.\n   You MUST add this exact line ONCE inside your 'whatsapp_text':\n   'For part number {', '.join(missing_pns)} our team will contact you soon.'"
+                     format_instruction += f"\n\n3. FOR MISSING OR OUT-OF-STOCK PARTS: The following part numbers are out of stock or not found in the database: {', '.join(missing_pns)}.\n   You MUST add this exact line ONCE inside your 'whatsapp_text':\n   'For following parts {', '.join(missing_pns)}, our team will contact you soon.'"
 
                  final_system_message += "\n\n" + format_instruction
             
@@ -421,14 +419,15 @@ class GPTService:
                      else:
                          vehicle_block = f"We do not support {context_data.get('vin_info', {}).get('brand', 'Unknown')} cars."
 
+                 pns_str = ', '.join(missing_pns if missing_pns else user_pns)
+                 v_text = vehicle_block.strip()
+                 header = f"{v_text}\n\n" if v_text else ""
                  format_instruction = f"""
-                 CRITICAL: NO MATCHING PARTS were found in the database.
+                 CRITICAL: The requested parts are OUT OF STOCK or not found in the database.
                  
                  You MUST set the 'whatsapp_text' field exactly to the following message:
                  
-                 "{vehicle_block.strip()}
-                 
-                 For following parts {', '.join(missing_pns)}, our team will contact you soon."
+                 "{header}For following parts {pns_str}, our team will contact you soon."
                  
                  Do NOT add any other table or placeholders. Just the above acknowledgement.
                  """

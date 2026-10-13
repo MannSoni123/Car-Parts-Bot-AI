@@ -123,7 +123,12 @@ class InventoryService:
             if response.status_code == 200:
                 data = response.json()
                 raw_items = data.get("items", [])
-                formatted_items = [self.format_inventory_item(item, tier) for item in raw_items]
+                # Only include genuine in-stock items (stock > 0)
+                formatted_items = [
+                    self.format_inventory_item(item, tier)
+                    for item in raw_items
+                    if int(item.get("stock") or 0) > 0
+                ]
 
                 # Build quick lookup map by normalized part number and OEM number
                 for item in formatted_items:
@@ -135,7 +140,7 @@ class InventoryService:
                     if oem_norm:
                         items_map[oem_norm] = item
                         found_norms.add(oem_norm)
-                print(f"[InventoryService] POST returned {len(formatted_items)} items.")
+                print(f"[InventoryService] POST returned {len(formatted_items)} in-stock items.")
             else:
                 error_body = response.text[:300] if response.text else ""
                 print(f"[InventoryService] Batch POST HTTP {response.status_code}: {error_body}")
@@ -177,13 +182,15 @@ class InventoryService:
                         if not matched_items and fallback_res:
                             matched_items = fallback_res[:5]
 
-                        if matched_items:
-                            # Sort in-stock first, lowest price first
-                            matched_items.sort(key=lambda x: (
-                                0 if int(x.get("stock") or 0) > 0 else 1,
+                        # Filter strictly for IN-STOCK items (stock > 0)
+                        in_stock_matches = [m for m in matched_items if int(m.get("stock") or 0) > 0]
+
+                        if in_stock_matches:
+                            # Sort lowest price first
+                            in_stock_matches.sort(key=lambda x: (
                                 float(x.get("price") or 999999) if x.get("price") is not None else 999999
                             ))
-                            for m_item in matched_items:
+                            for m_item in in_stock_matches:
                                 if m_item not in formatted_items:
                                     formatted_items.append(m_item)
                                 m_pn_norm = normalize_part_number(m_item.get("part_number", ""))
@@ -193,7 +200,9 @@ class InventoryService:
                                     found_norms.add(m_pn_norm)
                             if mpn in missing_pns:
                                 missing_pns.remove(mpn)
-                            print(f"[InventoryService] GET advanced search found {len(matched_items)} items for '{mpn}'.")
+                            print(f"[InventoryService] GET advanced search found {len(in_stock_matches)} in-stock items for '{mpn}'.")
+                        else:
+                            print(f"[InventoryService] GET advanced search found 0 in-stock items for '{mpn}' (out of stock).")
                 except Exception as e:
                     print(f"[InventoryService] GET advanced search error for '{mpn}': {e}")
 
@@ -517,18 +526,17 @@ class InventoryService:
                     found_items = in_stock_items
                     matched_query = var_q
                     break
-                elif not found_items:
-                    found_items = items
-                    matched_query = var_q
 
         # Fallback: try without brand filter if no results with brand
         if not found_items and brand:
             for var_q in variations:
                 items = self._direct_get_query(var_q, brand=None, tier=tier, limit=limit)
                 if items:
-                    found_items = items
-                    matched_query = var_q
-                    break
+                    in_stock_items = [it for it in items if int(it.get("stock") or 0) > 0]
+                    if in_stock_items:
+                        found_items = in_stock_items
+                        matched_query = var_q
+                        break
 
         # Sort: In-stock first, then lowest price first
         if found_items:

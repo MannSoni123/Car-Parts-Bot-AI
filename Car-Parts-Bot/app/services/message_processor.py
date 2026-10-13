@@ -267,6 +267,26 @@ def process_user_message(user_id: str, unified_text: str) -> str:
     session = get_session(user_id)
     print(f"Processing message for {user_id}: {unified_text[:100]}...")
 
+    # --- MULTILINGUAL TRACKING & SESSION CONTINUITY ---
+    detected_lang = "en"
+    try:
+        detected_lang = gpt.translation_service.detect_language(unified_text)
+    except Exception as e:
+        print(f"⚠️ Language detection error: {e}")
+        detected_lang = "en"
+
+    english_reset_phrases = ["in english", "speak english", "talk english", "english please", "reply in english"]
+    if any(p in unified_text.lower() for p in english_reset_phrases):
+        session["lang"] = "en"
+        save_session(user_id, session)
+        user_lang = "en"
+    elif detected_lang != "en":
+        session["lang"] = detected_lang
+        save_session(user_id, session)
+        user_lang = detected_lang
+    else:
+        user_lang = session.get("lang") or "en"
+
     # --- SHORT-CIRCUIT FOR SYSTEM NOTICES ---
     # E.g. from document_service returning "System Notice: The document has more than 5 pages..."
     if "System Notice:" in unified_text:
@@ -735,6 +755,11 @@ def process_user_message(user_id: str, unified_text: str) -> str:
                  })
             
             combined_question_text = "\n".join(questions)
+            if user_lang != "en":
+                try:
+                    combined_question_text = gpt.translation_service.from_base_language(combined_question_text, user_lang)
+                except Exception as e:
+                    print(f"⚠️ Error translating clarification question: {e}")
             print(f"🛑 Ambiguity Detected via GPT. Asking: {combined_question_text}")
             
             # Save State
@@ -813,7 +838,7 @@ def process_user_message(user_id: str, unified_text: str) -> str:
                 save_session(user_id, session)
                 print(f"🧹 Cleared session VIN data for user {user_id}")
                 u_b = vin_info.get("brand") if vin_info else "unsupported"
-                return f"""We do not support {u_b} car parts \n
+                rejection_msg = f"""We do not support {u_b} car parts \n
 We supply Genuine and Aftermarket spare parts for the following brands: \n
 •  BMW  
 •  Mercedes Benz  
@@ -821,6 +846,12 @@ We supply Genuine and Aftermarket spare parts for the following brands: \n
 •  Mini Cooper  
 •  Honda  
                 \nFor more details please contact us on +971 54 751 6365"""
+                if user_lang != "en":
+                    try:
+                        rejection_msg = gpt.translation_service.from_base_language(rejection_msg, user_lang)
+                    except Exception as e:
+                        print(f"⚠️ Error translating rejection message: {e}")
+                return rejection_msg
 
 
     # 2. Search by Name (Catalog Search - Depends on VIN)
@@ -859,7 +890,8 @@ We supply Genuine and Aftermarket spare parts for the following brands: \n
                 "preferred_area": preferred_area,
                 "is_warning_light": is_warning_light, # PASS THE FLAG
                 "skip_intro": (i >= 0), # Skip intro for 2nd+ message
-                "failed_vin_decode": True if (current_vin and not vin_info) else False
+                "failed_vin_decode": True if (current_vin and not vin_info) else False,
+                "user_lang": user_lang
             }
             
             print(f"   🔄 Processing Chunk {i+1}/{total_chunks} ({len(chunk)} items)...")
@@ -880,7 +912,8 @@ We supply Genuine and Aftermarket spare parts for the following brands: \n
             "preferred_area": preferred_area,
             "is_warning_light": is_warning_light, # PASS THE FLAG
             "skip_intro": True,
-            "failed_vin_decode": True if (current_vin and not vin_info) else False
+            "failed_vin_decode": True if (current_vin and not vin_info) else False,
+            "user_lang": user_lang
         }
         gpt_result = gpt.run_super_intent(unified_text, context_data)
         

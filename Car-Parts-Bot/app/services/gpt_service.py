@@ -13,6 +13,28 @@ import time
 import re
 from ..models import IntentPrompt
 
+LANGUAGE_NAMES = {
+    "gu": "Gujarati (ગુજરાતી)",
+    "hi": "Hindi (हिन्दी)",
+    "ar": "Arabic (العربية)",
+    "ur": "Urdu (اردو)",
+    "es": "Spanish (Español)",
+    "fr": "French (Français)",
+    "de": "German (Deutsch)",
+    "ru": "Russian (Русский)",
+    "zh": "Chinese (中文)",
+    "ja": "Japanese (日本語)",
+    "ko": "Korean (한국어)",
+    "it": "Italian (Italiano)",
+    "pt": "Portuguese (Português)",
+    "tr": "Turkish (Türkçe)",
+    "ta": "Tamil (தமிழ்)",
+    "te": "Telugu (తెలుగు)",
+    "bn": "Bengali (বাংলা)",
+    "ml": "Malayalam (മലയാളം)",
+    "fa": "Persian (فارسی)",
+}
+
 class GPTService:
     # Metrics for Admin API compatibility
     response_times = []
@@ -151,11 +173,16 @@ class GPTService:
             """
         
         # 0. Detect Language
-        detected_lang = "en"
-        try:
-            detected_lang = self.translation_service.detect_language(user_text)
-        except Exception:
-            pass
+        detected_lang = context_data.get("user_lang")
+        if not detected_lang or detected_lang == "en":
+            try:
+                msg_lang = self.translation_service.detect_language(user_text)
+                if msg_lang and msg_lang != "en":
+                    detected_lang = msg_lang
+            except Exception:
+                pass
+        if not detected_lang:
+            detected_lang = "en"
 
         # 3. Combine
         final_system_message = base_system_prompt + "\n\n" + context_block
@@ -269,11 +296,20 @@ class GPTService:
         failed_vin = context_data.get("failed_vin_decode", False)
         
         if failed_vin:
-             strict_instructions.append(f"CRITICAL: The VIN provided by the user is invalid or cannot be decoded. According to the Failure Handling rule, you MUST set the 'whatsapp_text' field exactly to:\n{failure_msg}")
+             if detected_lang != "en":
+                 strict_instructions.append(f"CRITICAL: The VIN provided by the user is invalid or cannot be decoded. According to the Failure Handling rule, you MUST translate into {LANGUAGE_NAMES.get(detected_lang, detected_lang)} and set the 'whatsapp_text' field to:\n{failure_msg}")
+             else:
+                 strict_instructions.append(f"CRITICAL: The VIN provided by the user is invalid or cannot be decoded. According to the Failure Handling rule, you MUST set the 'whatsapp_text' field exactly to:\n{failure_msg}")
         elif has_error:
-             strict_instructions.append(f"CRITICAL: The catalog search failed. According to the Failure Handling rule, you MUST set the 'whatsapp_text' field exactly to:\n{failure_msg}")
+             if detected_lang != "en":
+                 strict_instructions.append(f"CRITICAL: The catalog search failed. According to the Failure Handling rule, you MUST translate into {LANGUAGE_NAMES.get(detected_lang, detected_lang)} and set the 'whatsapp_text' field to:\n{failure_msg}")
+             else:
+                 strict_instructions.append(f"CRITICAL: The catalog search failed. According to the Failure Handling rule, you MUST set the 'whatsapp_text' field exactly to:\n{failure_msg}")
         elif len(parts) == 0 and not should_ask_vin and (user_descs or user_pns):
-             strict_instructions.append(f"CRITICAL: No matching in-stock parts were found. According to the Failure Handling rule, you MUST set the 'whatsapp_text' field exactly to:\n{failure_msg}")
+             if detected_lang != "en":
+                 strict_instructions.append(f"CRITICAL: No matching in-stock parts were found. According to the Failure Handling rule, you MUST translate into {LANGUAGE_NAMES.get(detected_lang, detected_lang)} and set the 'whatsapp_text' field to:\n{failure_msg}")
+             else:
+                 strict_instructions.append(f"CRITICAL: No matching in-stock parts were found. According to the Failure Handling rule, you MUST set the 'whatsapp_text' field exactly to:\n{failure_msg}")
 
         if len(parts) >= 1:
             strict_instructions.append(f"CRITICAL: {len(parts)} parts have been found in the database matching the user's request. You MUST present these parts (Product Name, Brand, Price, Availability). You SHOULD briefly acknowledge the user's specific issue (e.g. 'I see the door handle is broken') derived from the input before listing the parts.")
@@ -288,7 +324,8 @@ class GPTService:
 
         # --- MULTILINGUAL ENFORCEMENT ---
         if detected_lang != "en":
-            strict_instructions.append(f"CRITICAL: The user is speaking language code '{detected_lang}'. You MUST reply ENTIRELY in that language, except for Technical Terms (Part Names/Numbers) which can remain in English. Do NOT mix languages unnecessarily.")
+            lang_name = LANGUAGE_NAMES.get(detected_lang, detected_lang)
+            strict_instructions.append(f"CRITICAL: The user is communicating in {lang_name} (code: '{detected_lang}'). You MUST reply ENTIRELY in {lang_name}, except Technical Terms (Brand Names, Part Numbers, URLs) which remain in English. Do NOT mix languages.")
         
         if strict_instructions:
             # print(f"   🚨 [SuperIntent] Strict Instructions Triggered: {len(strict_instructions)} rules.")
@@ -429,6 +466,24 @@ class GPTService:
                  4. Show: Name, Brand, Price, Part Number, Availability.
                  """
                 final_system_message += "\n\n" + format_instruction
+        
+        # --- CRITICAL MULTILINGUAL MANDATE (HIGHEST OVERRIDING PRIORITY AT END OF PROMPT) ---
+        if detected_lang != "en":
+            lang_name = LANGUAGE_NAMES.get(detected_lang, detected_lang)
+            final_system_message += f"""
+
+CRITICAL MULTILINGUAL MANDATE (HIGHEST OVERRIDING PRIORITY):
+The user is communicating in {lang_name} (language code: '{detected_lang}').
+You MUST formulate your ENTIRE response in {lang_name}.
+Every sentence, greeting, introduction, explanation, guidance, vehicle info, and question MUST be written in natural, fluent {lang_name}.
+DO NOT OUTPUT ENGLISH SENTENCES.
+Keep ONLY the following in English/Latin characters:
+- Brand names (e.g. BMW, Mercedes Benz, Rolls Royce, Mini Cooper, Honda)
+- Part Numbers / OEM codes (e.g. 34116850885)
+- Website URLs (e.g. www.carpartsdubai.com, carpartsai.ae)
+- Proper names like 'SellonE' and 'CarPartsAI' if appropriate.
+All other phrases (including 'I am SellonE...', 'We supply Genuine and Aftermarket spare parts for the following brands...', 'Please share the VIN number...', 'Vehicle details for your reference are listed below:', 'Here are the available options:', 'For following parts our team will contact you soon') MUST be fully translated to {lang_name}.
+"""
         print(f"   📦 [SuperIntent] Parts Context: {len(parts)} items passed to GPT.")
         try:
             start_time = time.time()
@@ -477,7 +532,8 @@ class GPTService:
                 formatted_text = self._format_as_sales_agent(
                     result["whatsapp_text"], 
                     skip_intro=should_skip_intro, 
-                    suppress_branding=should_suppress_branding
+                    suppress_branding=should_suppress_branding,
+                    user_lang=detected_lang
                 )
                 result["whatsapp_text"] = formatted_text
                 
@@ -871,29 +927,38 @@ class GPTService:
             
         except Exception as e:
             current_app.logger.error(f"CRITICAL ERROR in extract_entities: {e}")
-            import traceback
-            traceback.print_exc()
             return {"vin_list": [], "part_numbers": [], "item_descriptions": [], "raw_item_descriptions": [], "is_warning_light": False}
 
-
-    def _format_as_sales_agent(self, raw_text: str, skip_intro: bool = False, suppress_branding: bool = False) -> str:
+    def _format_as_sales_agent(self, raw_text: str, skip_intro: bool = False, suppress_branding: bool = False, user_lang: str = "en") -> str:
         
         if not raw_text or len(raw_text) < 5:
             return raw_text
         
         # BYPASS: If text is a specific system error or simple notification, skip reformatting.
-        # This prevents "I'm sorry, no text to reformat" errors for simple replies.
         bypass_phrases = [
             "no item in catalog",
             "team will contact you",
             "software error",
-            "not found in reference", # ADDED: Prevent reformatting errors for this frequent case
+            "not found in reference",
         ]
         if any(phrase in raw_text.lower() for phrase in bypass_phrases):
-             # Special Handle for "Not Found in Reference" -> Standard Polite Message
              if "not found in reference" in raw_text.lower():
-                 return "Thank you for your inquiry. Our team will review the details and contact you shortly to provide the necessary assistance. 😊"
+                 not_found_msg = "Thank you for your inquiry. Our team will review the details and contact you shortly to provide the necessary assistance. 😊"
+                 if user_lang != "en":
+                     return self.translation_service.from_base_language(not_found_msg, user_lang)
+                 return not_found_msg
              return raw_text
+
+        lang_rule = ""
+        if user_lang != "en":
+            lang_name = LANGUAGE_NAMES.get(user_lang, user_lang)
+            lang_rule = f"""
+        10. LANGUAGE RULE (MANDATORY & CRITICAL):
+            The input text is written in {lang_name}. You MUST preserve the EXACT same language ({lang_name}) in the reformatted output.
+            DO NOT translate back to English or any other language! Keep all text in {lang_name}, except English brand names (BMW, Honda, etc.), part numbers, and URLs.
+            DO NOT add English commentary like "Here is the reformatted text:". Output ONLY the reformatted text in {lang_name}.
+            """
+
         system_prompt = f"""
         You are a Professional Car Parts Sales Agent on WhatsApp.
         Your job is to REFORMAT the provided text to make it look visually appealing, friendly, and professional.
@@ -911,10 +976,10 @@ class GPTService:
         5. NO TRUNCATION: You format EVERY single item in the list. Do not summarize.
         6. Output ONLY the reformatted text.
         7. GREETINGS: If the input text contains a greeting (e.g., "Hello," "Hi there,"), you MUST PRESERVE it at the beginning of your response. Ensure there is a blank line after the greeting before the content starts.
-        
        
         8. STRICT RULE: DO NOT ADD ANY FOOTER/SIGN-OFF, SUMMARY, or OUTRO like "I see you are looking for...". Just end with the list.
         9. EXCEPTION: If the input text contains 'I am CarPartsAI', YOU MUST PRESERVE IT in the output. Do not remove it.
+        {lang_rule}
         
         INPUT TEXT:
         {{raw_text}}
@@ -925,17 +990,19 @@ class GPTService:
         
         try:
             response = self.client.chat.completions.create(
-                model="gpt-4o", # UPGRADE to gpt-4.1-mini for better long-context handling
+                model="gpt-4o", 
                 messages=[
                     {"role": "system", "content": system_prompt.replace("{raw_text}", raw_text)},
                 ],
                 temperature=0.2, 
-                max_tokens=7000 # Standard safe max output for GPT models
+                max_tokens=7000
             )
             formatted = response.choices[0].message.content.strip()
             # Strip markdown code block wrappers GPT sometimes adds
             formatted = re.sub(r'^```(?:plaintext|text|markdown)?\s*\n?', '', formatted)
             formatted = re.sub(r'\n?```\s*$', '', formatted)
+            # Strip conversational preamble (e.g. "Sure! Here is...", "Certainly! ...")
+            formatted = re.sub(r'^(?:Sure!?|Certainly!?|Here is|Here\'s)[^\n]*\n+', '', formatted, flags=re.IGNORECASE)
             formatted = formatted.strip()
             # Guardrail: If GPT refused to format, return original text
             sorry_phrases = ["i'm sorry", "i cannot", "i can't assist", "i apologize", "i'm unable to"]

@@ -345,6 +345,12 @@ class GPTService:
         supported_list = ["bmw", "mercedes", "benz", "rolls royce", "mini", "honda"]
         is_supported_brand = any(s in brand_name for s in supported_list)
 
+        # Check whether vehicle details should be displayed (only if new VIN or parts match vehicle brand)
+        vin_brand = str(vin_data.get("brand", "")).lower()
+        parts_brands = [str(p.get("brand", "")).lower() for p in parts]
+        is_brand_match = any(vin_brand in pb or pb in vin_brand for pb in parts_brands) if (vin_brand and parts_brands) else True
+        should_show_vehicle_details = bool(context_data.get('vin_info')) and is_supported_brand and (has_new_vin or is_brand_match)
+
         # if user_pns or is_vip:
         if (user_pns or (is_vip and (user_descs or len(parts) > 0))) and not should_ask_vin:
             # print("we are breaking here")
@@ -376,7 +382,7 @@ class GPTService:
                     1. Start with:
                     "[Optional Greeting if user greeted you] We do not support [Insert Brand Name] cars, but here are the details for the part you requested:"
                     2. DO NOT show the "Vehicle details" block (Brand/Model/Year). Skip it.
-                 ''' if context_data.get('vin_info') else '1. Start with: "[Optional Greeting if user greeted you] Here are the available options:"'}
+                 ''' if should_show_vehicle_details else '1. Start with: "[Optional Greeting if user greeted you] Here are the available options:"'}
 
                  2. You MUST format the output for found parts EXACTLY as follows for each item (Use a Numbered List):
                  
@@ -404,7 +410,7 @@ class GPTService:
                  
                  # Prepare the Vehicle Details Block (reused logic)
                  vehicle_block = ""
-                 if context_data.get('vin_info'):
+                 if should_show_vehicle_details:
                      if is_supported_brand:
                          vehicle_block = f"""
                          Vehicle details for your reference are listed below:

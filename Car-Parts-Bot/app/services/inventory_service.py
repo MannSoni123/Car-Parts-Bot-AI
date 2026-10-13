@@ -87,8 +87,10 @@ class InventoryService:
         try:
             cached = redis_client.get(cache_key)
             if cached:
-                print(f"[InventoryService] Loaded batch lookup ({len(clean_pns)} PNs) from Redis.")
-                return json.loads(cached)
+                cached_data = json.loads(cached)
+                if cached_data.get("items"):
+                    print(f"[InventoryService] Loaded batch lookup ({len(clean_pns)} PNs) from Redis.")
+                    return cached_data
         except Exception:
             pass
 
@@ -133,21 +135,48 @@ class InventoryService:
                 if missing_pns:
                     for mpn in list(missing_pns):
                         try:
-                            fallback_res = self._direct_get_query(mpn, tier=tier, limit=5)
+                            fallback_res = self._direct_get_query(mpn, tier=tier, limit=10)
                             if fallback_res:
+                                mpn_norm = normalize_part_number(mpn)
+                                matched_items = []
                                 for f_item in fallback_res:
                                     f_pn_norm = normalize_part_number(f_item.get("part_number", ""))
                                     f_oem_norm = normalize_part_number(f_item.get("oem_number", ""))
-                                    mpn_norm = normalize_part_number(mpn)
-                                    if mpn_norm in (f_pn_norm, f_oem_norm) or mpn_norm in normalize_part_number(f_item.get("name", "")):
-                                        if f_item not in formatted_items:
-                                            formatted_items.append(f_item)
-                                        items_map[mpn_norm] = f_item
-                                        if mpn in missing_pns:
-                                            missing_pns.remove(mpn)
-                                        break
-                        except Exception:
-                            pass
+                                    f_raw_norm = normalize_part_number(f_item.get("raw_part_number", ""))
+                                    f_tag_norm = normalize_part_number(f_item.get("tag", ""))
+                                    f_name_norm = normalize_part_number(f_item.get("name", ""))
+
+                                    is_match = (
+                                        (f_pn_norm and (mpn_norm in f_pn_norm or f_pn_norm in mpn_norm)) or
+                                        (f_oem_norm and (mpn_norm in f_oem_norm or f_oem_norm in mpn_norm)) or
+                                        (f_raw_norm and (mpn_norm in f_raw_norm or f_raw_norm in mpn_norm)) or
+                                        (f_tag_norm and (mpn_norm in f_tag_norm or f_tag_norm in mpn_norm)) or
+                                        (f_name_norm and (mpn_norm in f_name_norm or f_name_norm in mpn_norm))
+                                    )
+                                    if is_match:
+                                        matched_items.append(f_item)
+
+                                # If no strict substring matched, accept items returned by API for this query
+                                if not matched_items and fallback_res:
+                                    matched_items = fallback_res[:5]
+
+                                if matched_items:
+                                    # Sort in-stock first, lowest price first
+                                    matched_items.sort(key=lambda x: (
+                                        0 if int(x.get("stock") or 0) > 0 else 1,
+                                        float(x.get("price") or 999999) if x.get("price") is not None else 999999
+                                    ))
+                                    for m_item in matched_items:
+                                        if m_item not in formatted_items:
+                                            formatted_items.append(m_item)
+                                        m_pn_norm = normalize_part_number(m_item.get("part_number", ""))
+                                        items_map[mpn_norm] = m_item
+                                        if m_pn_norm:
+                                            items_map[m_pn_norm] = m_item
+                                    if mpn in missing_pns:
+                                        missing_pns.remove(mpn)
+                        except Exception as e:
+                            print(f"[InventoryService] Fallback query error for '{mpn}': {e}")
 
                 result = {
                     "success": True,
@@ -157,11 +186,12 @@ class InventoryService:
                     "missing_pns": missing_pns
                 }
 
-                # Cache in Redis for 45 seconds (fast response, real-time stock)
-                try:
-                    redis_client.setex(cache_key, 45, json.dumps(result))
-                except Exception:
-                    pass
+                # Cache in Redis for 45 seconds only when items were found
+                if formatted_items:
+                    try:
+                        redis_client.setex(cache_key, 45, json.dumps(result))
+                    except Exception:
+                        pass
 
                 return result
 

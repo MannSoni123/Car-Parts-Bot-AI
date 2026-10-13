@@ -47,8 +47,30 @@ def search_parts_in_db(part_numbers: list, tier: str = "IND") -> list:
             found_norm.add(normalize_part_number(p["part_number"]))
         if p.get("oem_number"):
             found_norm.add(normalize_part_number(p["oem_number"]))
+        if p.get("raw_part_number"):
+            found_norm.add(normalize_part_number(p["raw_part_number"]))
+        if p.get("tag"):
+            found_norm.add(normalize_part_number(p["tag"]))
 
-    remaining_pns = [p for p in part_numbers if normalize_part_number(p) not in found_norm]
+    remaining_pns = []
+    for p in part_numbers:
+        p_norm = normalize_part_number(p)
+        matched = any(p_norm == fn or p_norm in fn or fn in p_norm for fn in found_norm if fn)
+        if not matched:
+            remaining_pns.append(p)
+
+    # 1B. Direct ecommerce query fallback for any remaining part numbers
+    for rpn in list(remaining_pns):
+        try:
+            q_res = inventory_service.search_query(rpn, tier=tier, limit=5)
+            if q_res.get("items"):
+                for it in q_res["items"]:
+                    if it not in results:
+                        results.append(it)
+                remaining_pns.remove(rpn)
+        except Exception as e:
+            print(f"   [Inventory API] Fallback query error for '{rpn}': {e}")
+
     if not remaining_pns:
         return results
 
@@ -789,8 +811,15 @@ def process_user_message(user_id: str, unified_text: str) -> str:
                  found_pns_set.add(normalize_part_number(p['oem_number']))
              if p.get('tag'):
                  found_pns_set.add(normalize_part_number(p['tag']))
+             if p.get('raw_part_number'):
+                 found_pns_set.add(normalize_part_number(p['raw_part_number']))
 
-        missing_pns = [pn for pn in part_numbers if normalize_part_number(pn) not in found_pns_set]
+        missing_pns = []
+        for pn in part_numbers:
+            pn_norm = normalize_part_number(pn)
+            matched = any(pn_norm == fn or pn_norm in fn or fn in pn_norm for fn in found_pns_set if fn)
+            if not matched:
+                missing_pns.append(pn)
 
 
     
@@ -863,6 +892,14 @@ We supply Genuine and Aftermarket spare parts for the following brands: \n
             q_res = inventory_service.search_query(desc, tier=user_tier, limit=5)
             if q_res.get("items"):
                 parts_found.extend(q_res["items"])
+
+    # 3. Fallback for mixed query (e.g. "129 oil filter") when individual PN search had 0 items
+    if part_numbers and item_descriptions and not parts_found:
+        combined_query = f"{' '.join(part_numbers)} {' '.join(item_descriptions)}"
+        q_res = inventory_service.search_query(combined_query, tier=user_tier, limit=5)
+        if q_res.get("items"):
+            parts_found.extend(q_res["items"])
+            missing_pns = []
 
     # --- STEP 3: CONTEXT & CHUNKING ---
     replies = []

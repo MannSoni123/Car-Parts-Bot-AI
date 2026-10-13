@@ -13,27 +13,83 @@ import time
 import re
 from ..models import IntentPrompt
 
-LANGUAGE_NAMES = {
-    "gu": "Gujarati (ગુજરાતી)",
-    "hi": "Hindi (हिन्दी)",
-    "ar": "Arabic (العربية)",
-    "ur": "Urdu (اردو)",
-    "es": "Spanish (Español)",
-    "fr": "French (Français)",
-    "de": "German (Deutsch)",
-    "ru": "Russian (Русский)",
-    "zh": "Chinese (中文)",
-    "ja": "Japanese (日本語)",
-    "ko": "Korean (한국어)",
-    "it": "Italian (Italiano)",
-    "pt": "Portuguese (Português)",
-    "tr": "Turkish (Türkçe)",
-    "ta": "Tamil (தமிழ்)",
-    "te": "Telugu (తెలుగు)",
-    "bn": "Bengali (বাংলা)",
-    "ml": "Malayalam (മലയാളം)",
-    "fa": "Persian (فارسی)",
-}
+def resolve_language_name(lang_input: str) -> str:
+    """
+    Dynamically resolves any language code or name into its full English language name.
+    Supports all natural languages worldwide without hardcoded limitations.
+    """
+    if not lang_input:
+        return "English"
+    clean = str(lang_input).strip()
+    if clean.lower() in ("en", "english"):
+        return "English"
+    if len(clean) > 3 and clean.isalpha():
+        return clean.capitalize()
+
+    code = clean.lower()
+    STANDARD_LANG_MAP = {
+        "af": "Afrikaans", "am": "Amharic", "ar": "Arabic", "as": "Assamese",
+        "az": "Azerbaijani", "be": "Belarusian", "bg": "Bulgarian", "bn": "Bengali",
+        "bs": "Bosnian", "ca": "Catalan", "cs": "Czech", "cy": "Welsh",
+        "da": "Danish", "de": "German", "el": "Greek", "en": "English",
+        "es": "Spanish", "et": "Estonian", "fa": "Persian", "fi": "Finnish",
+        "fil": "Filipino", "fr": "French", "ga": "Irish", "gl": "Galician",
+        "gu": "Gujarati", "he": "Hebrew", "hi": "Hindi", "hr": "Croatian",
+        "hu": "Hungarian", "hy": "Armenian", "id": "Indonesian", "is": "Icelandic",
+        "it": "Italian", "ja": "Japanese", "ka": "Georgian", "kk": "Kazakh",
+        "km": "Khmer", "kn": "Kannada", "ko": "Korean", "ky": "Kyrgyz",
+        "lo": "Lao", "lt": "Lithuanian", "lv": "Latvian", "mk": "Macedonian",
+        "ml": "Malayalam", "mn": "Mongolian", "mr": "Marathi", "ms": "Malay",
+        "my": "Burmese", "ne": "Nepali", "nl": "Dutch", "no": "Norwegian",
+        "pa": "Punjabi", "pl": "Polish", "ps": "Pashto", "pt": "Portuguese",
+        "ro": "Romanian", "ru": "Russian", "sd": "Sindhi", "si": "Sinhala",
+        "sk": "Slovak", "sl": "Slovenian", "so": "Somali", "sq": "Albanian",
+        "sr": "Serbian", "sv": "Swedish", "sw": "Swahili", "ta": "Tamil",
+        "te": "Telugu", "th": "Thai", "tl": "Tagalog", "tr": "Turkish",
+        "uk": "Ukrainian", "ur": "Urdu", "uz": "Uzbek", "vi": "Vietnamese",
+        "zh": "Chinese", "zu": "Zulu"
+    }
+    if code in STANDARD_LANG_MAP:
+        return STANDARD_LANG_MAP[code]
+
+    try:
+        from app.services.translation_service import TranslationService
+        ts = TranslationService()
+        client = ts._get_openai_client()
+        if client:
+            resp = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "Return ONLY the English name of the language for this ISO code (e.g. 'nl' -> 'Dutch'). Return only the name."
+                    },
+                    {"role": "user", "content": code}
+                ],
+                max_tokens=15,
+                temperature=0.0
+            )
+            name = resp.choices[0].message.content.strip()
+            if name:
+                STANDARD_LANG_MAP[code] = name
+                return name
+    except Exception:
+        pass
+
+    return code.capitalize()
+
+class DynamicLanguageDict(dict):
+    """Fallback dict-like object so existing LANGUAGE_NAMES.get(code, code) resolves any language dynamically."""
+    def get(self, key, default=None):
+        if not key or key == "en":
+            return "English"
+        name = resolve_language_name(key)
+        return name if name else (default or key)
+
+    def __getitem__(self, key):
+        return self.get(key, key)
+
+LANGUAGE_NAMES = DynamicLanguageDict()
 
 class GPTService:
     # Metrics for Admin API compatibility

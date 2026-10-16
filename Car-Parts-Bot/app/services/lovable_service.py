@@ -60,6 +60,55 @@ class LovableService:
             return self._memory_prompts[intent_key]
         return None
 
+    def generate_shared_reply(
+        self,
+        whatsapp_user_id: str,
+        message: str,
+        user_locale: str = "en",
+        vehicle_context: dict | None = None,
+    ) -> dict | None:
+        """Generate a reply with the website's shared AI brain.
+
+        Returning ``None`` preserves the legacy Python pipeline as an automatic
+        fallback during rollout or outages.
+        """
+        base_url = current_app.config.get("LOVABLE_API_BASE_URL", "https://carpartsai.ae")
+        api_key = current_app.config.get("CHATBOT_API_KEY", "")
+        url = f"{base_url}/api/public/whatsapp-chat"
+        headers = {
+            "x-chatbot-api-key": api_key,
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "whatsapp_user_id": whatsapp_user_id,
+            "message": message,
+            "user_locale": user_locale or "en",
+            "vehicle_context": vehicle_context or None,
+        }
+
+        try:
+            response = requests.post(url, headers=headers, json=payload, timeout=90)
+            response.raise_for_status()
+            body = response.json()
+            data = body.get("data") if body.get("success") else None
+            if isinstance(data, dict) and data.get("text"):
+                current_app.logger.info(
+                    "Generated WhatsApp reply with shared AI brain (vip=%s).",
+                    data.get("vip", False),
+                )
+                return data
+            current_app.logger.error("Shared AI endpoint returned an invalid response: %s", body)
+        except requests.exceptions.RequestException as error:
+            response_body = (
+                error.response.text
+                if getattr(error, "response", None) is not None
+                else str(error)
+            )
+            current_app.logger.error(
+                "Shared AI endpoint failed; using legacy fallback: %s", response_body
+            )
+        return None
+
     def post_analytics_events(self, payload: dict):
         """
         Posts search analytics events to the Lovable API.

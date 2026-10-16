@@ -11,6 +11,10 @@ def _env(name: str, default: str | None = None) -> str | None:
     return value.strip() if isinstance(value, str) else value
 
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    return (_env(name, str(default)) or "false").lower() in {"1", "true", "yes", "on"}
+
+
 @dataclass
 class AppConfig:
     # --- Core ---
@@ -56,6 +60,7 @@ class AppConfig:
     LOVABLE_API_BASE_URL: str = _env("LOVABLE_API_BASE_URL", "https://carpartsai.ae")
     CHATBOT_API_KEY: str = _env("CHATBOT_API_KEY", "0c0bb0134420faa63f1906acbdca7e3c4d2bf32ceebc1140994aeed46aa677df")
     DEFAULT_PRICING_TIER: str = _env("DEFAULT_PRICING_TIER", "IND")
+    USE_SHARED_AI_BRAIN: bool = _env_bool("USE_SHARED_AI_BRAIN", False)
 
     ADMIN_TOKEN: str = _env("ADMIN_TOKEN", "admin-token")
 

@@ -1,4 +1,5 @@
 from app.extensions import db
+from flask import current_app
 from app.models import Stock, User, PartSearchLog
 from app.services.gpt_service import GPTService
 from app.services.scraper.partsouq_xpath_scraper import get_scraper
@@ -324,6 +325,24 @@ def process_user_message(user_id: str, unified_text: str) -> str:
         if notices:
             return "\n\n".join(notices)
         return unified_text.strip()
+
+    if current_app.config.get("USE_SHARED_AI_BRAIN", False):
+        try:
+            from app.services.lovable_service import lovable_service
+
+            shared_reply = lovable_service.generate_shared_reply(
+                whatsapp_user_id=user_id,
+                message=unified_text,
+                user_locale=user_lang,
+                vehicle_context=session.get("vin_details"),
+            )
+            if shared_reply:
+                return shared_reply["text"]
+        except Exception as error:
+            current_app.logger.exception(
+                "Shared AI integration failed; continuing with legacy pipeline: %s",
+                error,
+            )
 
     # --- ENSURE USER RECORD EXISTS ---
     # Disabled User tracking in local DB, now using Lovable API
